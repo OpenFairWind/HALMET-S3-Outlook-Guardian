@@ -1,5 +1,10 @@
 # Conditional power budget worksheet
 
+See the maintained [BOM](../docs/hardware/bom.md),
+[assembly procedure](../docs/hardware/assembly.md), and
+[verification matrix](../docs/hardware/verification.md) for the reproducible
+hardware workflow. This worksheet remains as a compact preflight reference.
+
 Do not connect power until the blanks below are filled from the exact board
 revisions and confirmed with measurements.
 

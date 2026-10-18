@@ -1,5 +1,9 @@
 # Isolation constraints
 
+This safety constraint is incorporated into the maintained
+[hardware reproduction guide](../docs/hardware/index.md) and its
+[verification matrix](../docs/hardware/verification.md).
+
 HALMET's processor-side UART and power ground may be shared with the speech
 coprocessor only if the exact schematic confirms those header pins are outside
 the isolated NMEA2000 sensor domain. Do not bridge processor and sensor-side

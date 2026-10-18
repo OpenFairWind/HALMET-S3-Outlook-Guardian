@@ -1,4 +1,8 @@
-# Provisional wiring (not installation approval)
+# Provisional wiring (legacy location)
+
+The maintained, expanded reference schematic is now
+[`docs/hardware/schematic.md`](../docs/hardware/schematic.md). This file remains
+as a compact compatibility reference for earlier links.
 
 | Net | HALMET candidate | ESP32-S3 candidate | Status |
 |---|---|---|---|

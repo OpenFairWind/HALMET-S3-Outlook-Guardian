@@ -1,16 +1,20 @@
 # HALMET S3 Outlook Guardian
 
-This repository is being evolved from the HALMET example firmware into a
-distributed Outlook Guardian. HALMET remains responsible for marine alarms and
-an ESP32-S3 is a UART-connected PicoTTS speech coprocessor. The existing HALMET
-example application is intentionally still the default until the upstream
-Guardian state machine has been faithfully integrated and compile-tested; the
-portable protocol and speech-server foundation is available now. The preserved
-example builds as `halmet`; the ported application builds as `halmet_guardian`.
+This repository implements a distributed Outlook Guardian while preserving the
+original HALMET example firmware. HALMET remains responsible for marine alarms;
+an ESP32-S3 is a UART-connected, offline PicoTTS speech coprocessor. The ported
+Guardian state machine, portable protocol, bounded speech server and
+six-language S3 image are host- or compile-tested as documented. The preserved
+example builds as `halmet`; the distributed application builds as
+`halmet_guardian`. Physical audio and electrical qualification remain pending.
 
-See [architecture](docs/architecture.md), [wire protocol](docs/protocol.md),
-[upstream audit](docs/upstream-audit.md), [test plan](docs/test-plan.md) and the
-conditional [wiring](hardware/wiring.md) and [power budget](hardware/power-budget.md).
+Start with the [documentation overview](docs/index.md) and the step-by-step
+[development playground](docs/getting_started.md). The overview links the
+architecture, protocol, audit and test evidence. A separate
+[hardware reproduction guide](docs/hardware/index.md) provides the BOM,
+reference schematic, assembly sequence, verification matrix and experiment
+record. All electrical information is explicitly provisional until measured on
+the exact assembly.
 
 Run the hardware-independent tests with:
 

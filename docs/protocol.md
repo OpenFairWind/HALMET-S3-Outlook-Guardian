@@ -1,5 +1,12 @@
 # Guardian UART protocol v1
 
+## Scope
+
+The protocol is a point-to-point, binary application protocol over 115200 baud,
+8 data bits, no parity and one stop bit. It assumes a reliable electrical
+3.3 V UART connection but treats bytes as an arbitrary fragmented stream. CRC
+detects transmission errors; it provides no authenticity or confidentiality.
+
 All multibyte integers are little-endian. A frame is:
 
 | Offset | Bytes | Meaning |
@@ -24,6 +31,31 @@ The golden frame for SPEAK sequence 0x1234 with the two payload bytes `Hi` is:
 47 53 01 10 34 12 02 00 48 69 e0 bc
 ```
 
+### Decoder example
+
+The golden frame decomposes as follows:
+
+| Bytes | Interpretation |
+|---|---|
+| `47 53` | Resynchronization magic `GS` |
+| `01` | Protocol version 1 |
+| `10` | SPEAK message type |
+| `34 12` | Sequence `0x1234`, little-endian |
+| `02 00` | Two payload bytes |
+| `48 69` | ASCII `Hi` (a minimal framing vector, not a valid structured SPEAK request) |
+| `e0 bc` | CRC-16/CCITT-FALSE, little-endian |
+
+```mermaid
+stateDiagram-v2
+  [*] --> SeekMagic
+  SeekMagic --> ReadHeader: 47 53
+  ReadHeader --> SeekMagic: bad version or length
+  ReadHeader --> ReadBody: valid header
+  ReadBody --> Dispatch: complete and CRC valid
+  ReadBody --> SeekMagic: CRC invalid
+  Dispatch --> SeekMagic
+```
+
 ## Types and semantics
 
 `01 HELLO`, `02 CAPS`, `03 PING`, `04 PONG`, `10 SPEAK`, `11 STOP`,
@@ -45,6 +77,14 @@ rejected. The S3 queue holds eight requests, stable-sorted by priority. A full
 queue returns ERROR/queue-full. Critical speech interrupts active lower-priority
 speech; STOP cancels active speech and empties the queue. Other priorities do not
 interrupt.
+
+For example, a normal-volume Italian request for `Allarme motore` has the
+logical payload below (the frame header and CRC are omitted):
+
+```text
+priority=1, volume=80, pitch=100, speed=100,
+language_length=5, language="it-IT", text="Allarme motore"
+```
 
 ERROR payload byte codes are malformed=1, invalid-UTF8=2, queue-full=3,
 unsupported=4, playback=5 and update-rejected=6.

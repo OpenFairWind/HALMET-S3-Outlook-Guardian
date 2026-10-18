@@ -1,5 +1,19 @@
 # Test plan and results
 
+## Evidence strategy
+
+Testing follows a layered argument: portable unit tests establish deterministic
+protocol semantics; cross-compilation establishes toolchain and memory-layout
+feasibility; instrumented hardware tests establish physical behavior. Evidence
+from one layer must not be promoted to another.
+
+| Layer | Question answered | Current status |
+|---|---|---|
+| Host unit tests | Are framing, validation, retries and scheduling deterministic? | Passed |
+| Target builds | Do all sources link and fit their configured images? | Passed |
+| Bench integration | Do UART, I2S, audio and failure containment work physically? | Not run |
+| Electrical qualification | Are power, thermal, backfeed and isolation margins acceptable? | Not run |
+
 ## Run on 2026-10-18
 
 ```sh
@@ -17,8 +31,8 @@ critical interruption and malformed SPEAK rejection.
 
 PlatformIO 6.1.19 was available by absolute path. `pio project config` passed.
 Both `pio run -e halmet` (preserved example) and `pio run -e halmet_guardian`
-(distributed Guardian) passed. The former used 53,300 bytes RAM / 1,781,132
-bytes flash; the latter 53,936 / 1,730,308. These Arduino builds are compile
+(distributed Guardian) passed. The former used 53,300 bytes RAM / 1,781,092
+bytes flash; the latter 53,936 / 1,730,316. These Arduino builds are compile
 checks: the repository warns that the production HALMET build needs the
 ESP-IDF-from-source TLS configuration.
 
