@@ -32,6 +32,7 @@ flowchart LR
   H[HALMET\nalarm authority] -->|Guardian UART v1| S[ESP32-S3\nspeech server]
   S -->|I2S PCM| A[MAX98357A]
   A --> SPK[Speaker]
+  S --> L[S3 RGB LED]
   S -. advisory BUSY .-> H
   H --> D[OLED and status LED]
 ```
@@ -56,7 +57,8 @@ No S3 failure is allowed to block HALMET alarm processing or local indication.
 
 ## Current evidence boundary
 
-The protocol, speech server and HALMET UART backend are host-tested. The HALMET
+The protocol, speech server and HALMET UART backend are host-tested, including
+speech lifecycle, RGB, master-volume and all-language test commands. The HALMET
 example, distributed Guardian and six-language S3 firmware are build-tested.
 Signed UART update messages remain fail-closed until a production public trust
 root and manifest policy are supplied. ROM recovery is unavailable until the

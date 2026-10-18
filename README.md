@@ -24,6 +24,23 @@ cmake --build build-host --parallel
 ctest --test-dir build-host --output-on-failure
 ```
 
+After flashing the S3, use the Python command-line client to test and control
+it directly over its USB serial port:
+
+```sh
+python3 -m pip install pyserial
+python3 tools/guardian_cli.py --port /dev/cu.usbmodemXXXX ping
+python3 tools/guardian_cli.py --port /dev/cu.usbmodemXXXX volume 60
+python3 tools/guardian_cli.py --port /dev/cu.usbmodemXXXX speak \
+  --language it-IT "Prova del sistema Guardian"
+python3 tools/guardian_cli.py --port /dev/cu.usbmodemXXXX test-all
+python3 tools/guardian_cli.py --port /dev/cu.usbmodemXXXX bt-status
+python3 tools/guardian_cli.py --port /dev/cu.usbmodemXXXX bt-scan 5
+```
+
+See the [UART protocol](docs/protocol.md) for command semantics and the
+[getting-started guide](docs/getting_started.md) for the complete CLI reference.
+
 ## Original HALMET example
 
 This repository provides example firmware for [HALMET: Hat Labs Marine Engine & Tank interface](https://shop.hatlabs.fi/products/halmet).

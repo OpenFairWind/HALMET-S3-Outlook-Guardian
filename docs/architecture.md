@@ -32,10 +32,19 @@ there. `SpeechBackend` is the boundary; `UartSpeechBackend` only transports an
 already composed request and tracks remote state. Failure or absence of S3 must
 never stop HALMET alarm processing or its local indicators.
 
-S3 owns frame validation, a bounded priority queue, PicoTTS, I2S/MAX98357A and
-status/fault reports. It has no Signal K or NMEA2000 stack and does not reproduce
-the Guardian alarm state machine. The portable `SpeechServer` implements command
-semantics; `s3_main.cpp` connects it to UART0, PicoTTS and MAX98357A I2S.
+S3 owns frame validation, a bounded priority queue, PicoTTS, I2S/MAX98357A,
+master audio volume, its local RGB LED and status/fault reports. It has no
+Signal K or NMEA2000 stack and does not reproduce the Guardian alarm state
+machine. HALMET sends the desired master volume again after each S3 HELLO. The
+portable `SpeechServer` implements command semantics; `s3_main.cpp` connects it
+to UART0, PicoTTS, MAX98357A I2S and the S3 RGB LED.
+
+The single `halmet_guardian` image supports GPIO, USB and Auto transport modes.
+For bench development, `tools/guardian_usb_router.py` extracts only CRC-valid
+Guardian frames from the HALMET log stream and routes them to the S3 USB port
+and back. Auto transmits on both links and accepts responses from either;
+GPIO and USB restrict traffic to one route. A USB host must run the router for
+the USB route, while the production GPIO16/17 connection has no host dependency.
 
 ## Architectural invariants
 

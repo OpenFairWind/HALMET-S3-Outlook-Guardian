@@ -102,7 +102,84 @@ A/B application slot. Compiler warnings inside the pinned PicoTTS C source must
 be recorded; they are not evidence of a hardware failure, nor should they be
 silently described as a warning-free build.
 
-## 7. Make a repeatability record
+## 7. Exercise the S3 from the command line
+
+The `tools/guardian_cli.py` Python 3 client encodes and validates the same
+CRC-framed protocol used by HALMET. Install its only external dependency:
+
+```sh
+python3 -m pip install pyserial
+```
+
+Find the S3 serial device (`/dev/cu.usbmodem…` on macOS, `/dev/ttyACM…` on
+Linux, or a `COM` port on Windows), then run commands such as:
+
+```sh
+python3 tools/guardian_cli.py --port /dev/cu.usbmodemXXXX ping
+python3 tools/guardian_cli.py --port /dev/cu.usbmodemXXXX volume 60
+python3 tools/guardian_cli.py --port /dev/cu.usbmodemXXXX rgb 0 0 64
+python3 tools/guardian_cli.py --port /dev/cu.usbmodemXXXX speak \
+  --language en-GB --priority normal "Guardian speech test"
+python3 tools/guardian_cli.py --port /dev/cu.usbmodemXXXX test-all
+python3 tools/guardian_cli.py --port /dev/cu.usbmodemXXXX stop
+python3 tools/guardian_cli.py --port /dev/cu.usbmodemXXXX bt-status
+python3 tools/guardian_cli.py --port /dev/cu.usbmodemXXXX bt-scan 5
+python3 tools/guardian_cli.py --port /dev/cu.usbmodemXXXX \
+  bt-connect aa:bb:cc:dd:ee:ff --address-type 1
+python3 tools/guardian_cli.py --port /dev/cu.usbmodemXXXX bt-disconnect
+python3 tools/guardian_cli.py --port /dev/cu.usbmodemXXXX bt-forget
+```
+
+The S3 never starts Wi-Fi. BLE starts automatically as a central named
+`Guardian-S3`; `bt-status` reports both facts. Use the address type printed by
+`bt-scan` when connecting, with the media remote awake and in pairing mode.
+
+The same controls are available in the HALMET SensESP web UI under **Bluetooth
+remote (managed by S3)**. Choose **Scan for nearby devices**, save, and reload
+after the configured duration. Select the named remote from the device menu,
+choose **Pair selected device**, and save. Press a remote button and reload to
+read its HID hex code. Each mapping is a separate editable list item and has
+this form:
+
+```text
+0100=electrical.switches.anchorLight.state|true|Anchor light on
+```
+
+The left side is the HID report shown by the page. The middle fields are a
+Signal K path and any valid JSON value. The optional final field is spoken by
+the S3 after the PUT request is sent. Select **Test last button** to replay the
+most recently received HID report through the same mapping without pressing the remote again.
+HALMET's own Bluetooth controller is stopped at boot; its Wi-Fi remains active
+for SensESP and Signal K.
+
+### USB-only developer connection
+
+The normal HALMET Guardian image supports both the production GPIO UART and the
+USB developer route. To test both boards without GPIO16/17 wiring, select
+**USB** or **Auto** under **Speech and alarms → S3 protocol transport**, restart
+HALMET, and run the host router:
+
+```sh
+pio run -e halmet_guardian -t upload --upload-port /dev/cu.usbserial-1140
+python3 tools/guardian_usb_router.py \
+  --halmet /dev/cu.usbserial-1140 \
+  --s3 /dev/cu.usbmodem5B8F0986921 \
+  --reset-halmet --show-logs
+```
+
+The computer is part of this developer topology and must keep the router
+running. Stop it before flashing either board. **Auto** is the default and
+transmits on both links; **GPIO** and **USB** restrict traffic to the selected
+link. Protocol idempotence makes duplicate delivery harmless if both routes
+are connected.
+
+Global options such as `--timeout`, `--baud`, and `--sequence` must appear
+before the subcommand. `speak` validates its per-request volume, pitch and speed
+locally. `volume` sets the S3 master level; the effective output is the product
+of master and per-request volume. Commands exit nonzero on timeout, protocol
+ERROR or an incomplete lifecycle.
+
+## 8. Make a repeatability record
 
 Save, at minimum, the operating system, tool versions, Git revisions, all three
 build results and the reported image sizes. A compact record can be produced by:
@@ -119,7 +196,7 @@ For a clean experiment, `git status --short` should be empty after tests. The
 `.pio/` and `build-host/` directories are generated artifacts and should not be
 treated as source inputs.
 
-## 8. Proceed to hardware only after review
+## 9. Proceed to hardware only after review
 
 Read the complete [hardware guide](hardware/index.md), populate its assembly
 record, and perform the no-power continuity checks before connecting USB or a

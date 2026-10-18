@@ -5,6 +5,8 @@
 #include <NMEA2000_esp32.h>
 #include <WiFi.h>
 #include <Wire.h>
+#include <esp32-hal-bt.h>
+#include <esp_system.h>
 #include <map>
 #include <memory>
 #include <vector>
@@ -122,6 +124,7 @@ class GuardianConfig : public FileSystemSaveable {
     root["snooze_time"] = snooze_time_min_;
     root["welcome_enabled"] = welcome_enabled_;
     root["welcome_message"] = welcome_message_;
+    root["transport"] = transport_;
     return true;
   }
 
@@ -140,6 +143,10 @@ class GuardianConfig : public FileSystemSaveable {
     welcome_enabled_ = config["welcome_enabled"] | welcome_enabled_;
     welcome_message_ = config["welcome_message"] | welcome_message_;
     welcome_message_.trim();
+    const String transport = config["transport"] | transport_;
+    if (transport == "Auto" || transport == "GPIO" || transport == "USB") {
+      transport_ = transport;
+    }
     if (on_change_) {
       on_change_();
     }
@@ -160,6 +167,7 @@ class GuardianConfig : public FileSystemSaveable {
   bool welcome_enabled() const { return welcome_enabled_; }
   // Empty for the standard announcement in the configured language.
   const String& welcome_message() const { return welcome_message_; }
+  const String& transport() const { return transport_; }
 
   // Wrap the text in the PicoTTS markup that selects the voice.
   String markup(String text) const {
@@ -193,6 +201,7 @@ class GuardianConfig : public FileSystemSaveable {
   int snooze_time_min_ = 5;
   bool welcome_enabled_ = true;
   String welcome_message_;
+  String transport_ = "Auto";
   std::function<void()> on_change_;
 };
 
@@ -219,7 +228,8 @@ const String ConfigSchema(const GuardianConfig& obj) {
          R"###(,"repeat_interval":{"title":"Repeat an unacknowledged alarm every (s, 0 = speak once)","type":"integer"})###"
          R"###(,"snooze_time":{"title":"Snooze time (min)","type":"integer"})###"
          R"###(,"welcome_enabled":{"title":"Speak a welcome message at startup","type":"boolean"})###"
-         R"###(,"welcome_message":{"title":"Welcome message (empty = the standard announcement)","type":"string"}}})###";
+         R"###(,"welcome_message":{"title":"Welcome message (empty = the standard announcement)","type":"string"})###"
+         R"###(,"transport":{"title":"S3 protocol transport (restart required)","type":"string","enum":["Auto","GPIO","USB"]}}})###";
 }
 
 // Which notifications are announced, by source.
@@ -333,6 +343,127 @@ const String ConfigSchema(const SourcesConfig& obj) {
          R"###(,"n2k_technical":{"title":"NMEA 2000: technical alerts","type":"boolean"}}})###";
 }
 
+class BluetoothConfig : public FileSystemSaveable {
+ public:
+  explicit BluetoothConfig(const String& path) : FileSystemSaveable(path) {
+    load();
+  }
+
+  bool to_json(JsonObject& root) override {
+    root["action"].to<JsonArray>().add("No action");
+    root["scan_seconds"] = scan_seconds_;
+    JsonArray selected = root["device"].to<JsonArray>();
+    if (selected_device_.length() > 0) selected.add(selected_device_);
+    JsonArray mappings = root["mappings"].to<JsonArray>();
+    int start = 0;
+    while (start < static_cast<int>(mappings_.length())) {
+      int end = mappings_.indexOf('\n', start);
+      if (end < 0) end = mappings_.length();
+      String line = mappings_.substring(start, end);
+      line.trim();
+      if (line.length() > 0 && line[0] != '#') mappings.add(line);
+      start = end + 1;
+    }
+    root["status"] = status_;
+    root["devices"] = devices_;
+    root["last_hid"] = last_hid_;
+    return true;
+  }
+
+  bool from_json(const JsonObject& root) override {
+    scan_seconds_ = constrain(root["scan_seconds"] | scan_seconds_, 1, 30);
+    if (root["device"].is<JsonArrayConst>() && root["device"].size() > 0)
+      selected_device_ = root["device"][0].as<String>();
+    // Migrate the first version, which stored address and type separately.
+    if (selected_device_.length() == 0 && root["address"].is<String>()) {
+      selected_device_ = root["address"].as<String>() + "|" +
+                         String(root["address_type"] | 0);
+    }
+    if (root["mappings"].is<JsonArrayConst>()) {
+      mappings_ = "";
+      for (JsonVariantConst item : root["mappings"].as<JsonArrayConst>()) {
+        String line = item.as<String>();
+        line.trim();
+        if (line.length() > 0)
+          mappings_ += (mappings_.length() > 0 ? "\n" : "") + line;
+      }
+    } else if (root["mappings"].is<String>()) {
+      mappings_ = root["mappings"].as<String>();
+    }
+    String action = "No action";
+    if (root["action"].is<JsonArrayConst>() && root["action"].size() > 0)
+      action = root["action"][0].as<String>();
+    else if (root["action"].is<String>())
+      action = root["action"].as<String>();
+    if (action != "No action" && action != "none" && on_action_)
+      on_action_(action);
+    return true;
+  }
+
+  int scan_seconds() const { return scan_seconds_; }
+  String address() const {
+    const int separator = selected_device_.indexOf('|');
+    return separator < 0 ? selected_device_ : selected_device_.substring(0, separator);
+  }
+  int address_type() const {
+    const int first = selected_device_.indexOf('|');
+    if (first < 0) return 0;
+    const int second = selected_device_.indexOf('|', first + 1);
+    return selected_device_.substring(first + 1, second).toInt();
+  }
+  const String& mappings() const { return mappings_; }
+  void set_status(const String& value) { status_ = value; }
+  void set_devices(const String& value, const std::vector<String>& options) {
+    devices_ = value;
+    device_options_ = options;
+    if (selected_device_.length() == 0 && device_options_.size() == 1)
+      selected_device_ = device_options_[0];
+  }
+  void set_last_hid(const String& value) { last_hid_ = value; }
+  void on_action(std::function<void(const String&)> callback) {
+    on_action_ = std::move(callback);
+  }
+
+ protected:
+  friend const String ConfigSchema(const BluetoothConfig&);
+  int scan_seconds_ = 5;
+  String selected_device_;
+  std::vector<String> device_options_;
+  String mappings_;
+  String status_ = "Waiting for the S3 connection…";
+  String devices_ = "No scan results yet";
+  String last_hid_ = "No button received yet";
+  std::function<void(const String&)> on_action_;
+};
+
+String json_string(String value) {
+  value.replace("\\", "\\\\");
+  value.replace("\"", "\\\"");
+  value.replace("\n", "\\n");
+  return "\"" + value + "\"";
+}
+
+const String ConfigSchema(const BluetoothConfig& obj) {
+  String devices;
+  for (const String& option : obj.device_options_) {
+    if (devices.length() > 0) devices += ",";
+    devices += json_string(option);
+  }
+  if (devices.length() == 0 && obj.selected_device_.length() > 0)
+    devices = json_string(obj.selected_device_);
+  if (devices.length() == 0)
+    devices = json_string("No devices yet — run a scan");
+  return String(R"###({"type":"object","properties":{
+"status":{"title":"Connection status","description":"Bluetooth runs on the S3; HALMET keeps its radio off and uses Wi-Fi only.","type":"string","readOnly":true},
+"action":{"title":"Run an action","description":"Choose an action, then press Save. The selection returns to No action automatically.","type":"array","format":"select","uniqueItems":true,"maxItems":1,"items":{"type":"string","enum":["No action","Refresh status","Scan for nearby devices","Pair selected device","Disconnect device","Test last button","Forget all devices"]}},
+"scan_seconds":{"title":"Scan time","description":"Five seconds is normally enough. Increase it if the remote is difficult to discover.","type":"integer","minimum":1,"maximum":30},
+"device":{"title":"Remote device","description":"Scan first, reload the page, then select the remote by name, signal strength and address.","type":"array","format":"select","uniqueItems":true,"maxItems":1,"items":{"type":"string","enum":[)###") + devices + R"###(]}},
+"last_hid":{"title":"Last button code","description":"Press a remote button, then reload. Use this code at the start of a mapping.","type":"string","readOnly":true},
+"mappings":{"title":"Button mappings","description":"One mapping per item: HID_CODE=signal.k.path|JSON value|optional words to speak. Example: 0100=electrical.switches.anchorLight.state|true|Anchor light on","type":"array","items":{"type":"string"}},
+"devices":{"title":"Scan summary","type":"string","readOnly":true}
+}})###";
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // RGB LED
 
@@ -402,17 +533,37 @@ class AlarmLed : public SystemStatusLed {
 
 std::shared_ptr<GuardianConfig> config;
 std::shared_ptr<SourcesConfig> sources;
+std::shared_ptr<BluetoothConfig> bluetooth_config;
 std::shared_ptr<AlarmLed> alarm_led;
 class ArduinoSerialTransport final : public guardian::ByteTransport {
  public:
-  explicit ArduinoSerialTransport(HardwareSerial* serial) : serial_(serial) {}
-  size_t available() const override { return serial_->available(); }
-  int read() override { return serial_->read(); }
+  enum class Mode { kAuto, kGpio, kUsb };
+
+  ArduinoSerialTransport(HardwareSerial* gpio, HardwareSerial* usb, Mode mode)
+      : gpio_(gpio), usb_(usb), mode_(mode) {}
+  size_t available() const override {
+    if (mode_ == Mode::kGpio) return gpio_->available();
+    if (mode_ == Mode::kUsb) return usb_->available();
+    return gpio_->available() + usb_->available();
+  }
+  int read() override {
+    if (mode_ == Mode::kGpio) return gpio_->read();
+    if (mode_ == Mode::kUsb) return usb_->read();
+    // Prefer the dedicated link. USB replies remain available when GPIO is
+    // unconnected, while duplicate replies are harmless protocol replays.
+    return gpio_->available() ? gpio_->read() : usb_->read();
+  }
   size_t write(const uint8_t* bytes, size_t length) override {
-    return serial_->write(bytes, length);
+    if (mode_ == Mode::kGpio) return gpio_->write(bytes, length);
+    if (mode_ == Mode::kUsb) return usb_->write(bytes, length);
+    const size_t gpio_written = gpio_->write(bytes, length);
+    const size_t usb_written = usb_->write(bytes, length);
+    return gpio_written == length || usb_written == length ? length : 0;
   }
  private:
-  HardwareSerial* serial_;
+  HardwareSerial* gpio_;
+  HardwareSerial* usb_;
+  Mode mode_;
 };
 std::unique_ptr<ArduinoSerialTransport> speech_transport;
 std::unique_ptr<guardian::UartSpeechBackend> speech;
@@ -425,7 +576,9 @@ void say(const String& text) {
   if (speech == nullptr) return;
   guardian::protocol::SpeakRequest request;
   request.priority = guardian::protocol::Priority::kNormal;
-  request.volume = config->volume_percent();
+  // Per-request volume stays at full scale; HALMET owns the S3 master volume
+  // through SET_VOLUME and restores it whenever the S3 sends HELLO.
+  request.volume = 100;
   request.pitch = config->pitch();
   request.speed = config->speed();
   request.language = config->language().c_str();
@@ -527,6 +680,73 @@ void put_notification_method(const String& path, const String& method) {
                path.c_str(), status);
     }
   });
+}
+
+void send_signalk_put(const String& path, const String& json_value) {
+  if (!signalk_connected() || path.length() == 0) return;
+  JsonDocument value;
+  if (deserializeJson(value, json_value) != DeserializationError::Ok) {
+    ESP_LOGW(__FILENAME__, "Invalid HID mapping JSON value: %s",
+             json_value.c_str());
+    return;
+  }
+  JsonDocument request;
+  request["context"] = "vessels.self";
+  request["put"]["path"] = path;
+  request["put"]["value"].set(value.as<JsonVariantConst>());
+  SKRequest::send_request(request, [path](JsonDocument& response) {
+    const int status = response["statusCode"] | 0;
+    if (status != 0 && status != 200 && status != 202)
+      ESP_LOGW(__FILENAME__, "HID Signal K PUT rejected for %s: %d",
+               path.c_str(), status);
+  });
+}
+
+String hid_code(const std::vector<uint8_t>& report) {
+  static constexpr char kHex[] = "0123456789ABCDEF";
+  String code;
+  // The first two bytes identify the remote GATT characteristic. Mapping the
+  // HID report bytes only keeps codes stable across reconnections.
+  for (size_t index = 2; index < report.size(); ++index) {
+    code += kHex[report[index] >> 4];
+    code += kHex[report[index] & 0x0f];
+  }
+  return code;
+}
+
+void handle_hid_report(const std::vector<uint8_t>& report) {
+  if (bluetooth_config == nullptr) return;
+  const String code = hid_code(report);
+  bluetooth_config->set_last_hid(code);
+  ESP_LOGI(__FILENAME__, "S3 Bluetooth HID report: %s", code.c_str());
+
+  String mappings = bluetooth_config->mappings();
+  int start = 0;
+  while (start <= static_cast<int>(mappings.length())) {
+    int end = mappings.indexOf('\n', start);
+    if (end < 0) end = mappings.length();
+    String line = mappings.substring(start, end);
+    start = end + 1;
+    line.trim();
+    if (line.length() == 0 || line[0] == '#') continue;
+    const int equals = line.indexOf('=');
+    const int first_pipe = line.indexOf('|', equals + 1);
+    const int second_pipe = line.indexOf('|', first_pipe + 1);
+    if (equals <= 0 || first_pipe < 0) continue;
+    String mapped_code = line.substring(0, equals);
+    mapped_code.trim();
+    mapped_code.toUpperCase();
+    if (mapped_code != code) continue;
+    String path = line.substring(equals + 1, first_pipe);
+    String value = second_pipe < 0 ? line.substring(first_pipe + 1)
+                                   : line.substring(first_pipe + 1, second_pipe);
+    String spoken = second_pipe < 0 ? "" : line.substring(second_pipe + 1);
+    path.trim();
+    value.trim();
+    spoken.trim();
+    send_signalk_put(path, value);
+    if (spoken.length() > 0) say(spoken);
+  }
 }
 
 // Acknowledge button: the pending alarms stay on the LED but are no longer
@@ -1230,6 +1450,10 @@ void setup_button(uint8_t pin, void (*on_press)()) {
 void setup() {
   SetupLogging();
 
+  // HALMET owns Wi-Fi/Signal K only. All Bluetooth controller work belongs to
+  // the S3 and is reached through the Guardian UART protocol.
+  btStop();
+
   // Create the global SensESPApp() object. The on-board RGB LED shows the
   // alarms instead of the system status.
   SensESPAppBuilder builder;
@@ -1262,14 +1486,89 @@ void setup() {
           "connected.")
       ->set_requires_restart(true);
 
+  bluetooth_config =
+      std::make_shared<BluetoothConfig>("/Outlook Guardian/Bluetooth Remote");
+  ConfigItem(bluetooth_config)
+      ->set_title("Bluetooth remote (managed by S3)")
+      ->set_description(
+          "Scan, pair, test and disconnect BLE HID remotes through the S3. "
+          "Mappings issue custom Signal K PUT requests; reload after a scan "
+          "or button press to refresh read-only results.");
+
+  // One image supports the production GPIO UART and the developer USB route.
+  // In Auto mode frames go to both; replies may arrive from either. The host
+  // router extracts CRC-valid frames from the USB stream and ignores logs.
+  Serial.begin(115200);
   // Arduino orders these arguments as RX, TX. Match J201 GPIO17 (RX from the
   // S3) and GPIO16 (TX to the S3) documented in hardware/wiring.md.
   Serial2.begin(115200, SERIAL_8N1, 17, 16);
+  ArduinoSerialTransport::Mode transport_mode =
+      ArduinoSerialTransport::Mode::kAuto;
+  if (config->transport() == "GPIO") {
+    transport_mode = ArduinoSerialTransport::Mode::kGpio;
+  } else if (config->transport() == "USB") {
+    transport_mode = ArduinoSerialTransport::Mode::kUsb;
+  }
+  speech_transport = std::make_unique<ArduinoSerialTransport>(
+      &Serial2, &Serial, transport_mode);
   pinMode(GUARDIAN_BUSY_PIN, INPUT_PULLDOWN);
-  speech_transport = std::make_unique<ArduinoSerialTransport>(&Serial2);
-  speech = std::make_unique<guardian::UartSpeechBackend>(speech_transport.get());
+  // HALMET and S3 can reset independently. A fresh boot seed prevents the S3's
+  // recent-sequence replay cache from mistaking a new request for one sent by
+  // an earlier HALMET boot.
+  uint16_t initial_sequence = static_cast<uint16_t>(esp_random());
+  if (initial_sequence == 0) initial_sequence = 1;
+  speech = std::make_unique<guardian::UartSpeechBackend>(
+      speech_transport.get(), initial_sequence);
+  speech->set_volume(config->volume_percent());
+  speech->on_bluetooth_hid(handle_hid_report);
+  bluetooth_config->on_action([](const String& action) {
+    bool sent = false;
+    if (action == "Refresh status") {
+      sent = speech->bluetooth_get_status();
+    } else if (action == "Scan for nearby devices") {
+      sent = speech->bluetooth_scan(bluetooth_config->scan_seconds());
+    } else if (action == "Pair selected device") {
+      sent = speech->bluetooth_connect(
+          bluetooth_config->address().c_str(),
+          bluetooth_config->address_type());
+    } else if (action == "Disconnect device") {
+      sent = speech->bluetooth_disconnect();
+    } else if (action == "Test last button") {
+      sent = speech->bluetooth_test();
+    } else if (action == "Forget all devices") {
+      sent = speech->bluetooth_forget();
+    }
+    bluetooth_config->set_status(sent ? "Command sent to S3"
+                                       : "Command could not be sent");
+  });
   // UART is nonblocking and advisory BUSY is deliberately not used as truth.
   event_loop()->onRepeat(5, []() { speech->poll(); });
+  event_loop()->onRepeat(500, []() {
+    const auto& state = speech->bluetooth_state();
+    bluetooth_config->set_status(
+        String(state.enabled ? "BLE ready" : "BLE unavailable") + " · " +
+        (state.scanning ? "Scanning" : "Idle") + " · " +
+        (state.connected ? "Remote connected" : "No remote connected") +
+        " · " + (state.wifi_off ? "S3 Wi-Fi off" : "Check S3 Wi-Fi") +
+        " · " + String(static_cast<int>(state.bonds)) +
+        (state.bonds == 1 ? " bonded device" : " bonded devices"));
+    String devices;
+    std::vector<String> options;
+    for (const auto& device : speech->bluetooth_devices()) {
+      if (devices.length() > 0) devices += "\n";
+      const String name = device.name.empty() ? "Unnamed device"
+                                               : device.name.c_str();
+      const String option = String(device.address.c_str()) + "|" +
+                            String(static_cast<int>(device.address_type)) +
+                            "|" + String(static_cast<int>(device.rssi)) +
+                            " dBm|" + name;
+      options.push_back(option);
+      devices += name + " — " + String(static_cast<int>(device.rssi)) +
+                 " dBm — " + device.address.c_str();
+    }
+    if (devices.length() > 0) bluetooth_config->set_devices(devices, options);
+  });
+  speech->bluetooth_get_status();
   if (config->welcome_enabled()) {
     say(config->welcome_message().length() > 0
             ? config->welcome_message()

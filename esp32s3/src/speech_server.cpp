@@ -4,8 +4,13 @@
 
 namespace guardian {
 
-SpeechServer::SpeechServer(SpeechEngine* engine, SendHandler send, void* context)
-    : engine_(engine), send_(send), context_(context) {}
+SpeechServer::SpeechServer(SpeechEngine* engine, SendHandler send, void* context,
+                           RgbHandler set_rgb, void* rgb_context)
+    : engine_(engine),
+      send_(send),
+      context_(context),
+      set_rgb_(set_rgb),
+      rgb_context_(rgb_context) {}
 
 void SpeechServer::reply(protocol::Type type, uint16_t sequence,
                          std::vector<uint8_t> payload) {
@@ -40,6 +45,15 @@ bool SpeechServer::enqueue(Entry entry) {
   return true;
 }
 
+void SpeechServer::remove_queued(uint16_t sequence) {
+  size_t write = 0;
+  for (size_t read = 0; read < queue_size_; ++read) {
+    if (queue_[read].sequence != sequence)
+      queue_[write++] = std::move(queue_[read]);
+  }
+  queue_size_ = write;
+}
+
 void SpeechServer::handle(const protocol::Frame& frame) {
   if (frame.type == protocol::Type::kPing) {
     reply(protocol::Type::kPong, frame.sequence);
@@ -51,6 +65,72 @@ void SpeechServer::handle(const protocol::Frame& frame) {
     active_ = false;
     reply(protocol::Type::kAck, frame.sequence);
     reply(protocol::Type::kDone, frame.sequence);
+    return;
+  }
+  if (frame.type == protocol::Type::kSetRgb) {
+    if (frame.payload.size() != 3) {
+      error(frame.sequence, protocol::ErrorCode::kMalformed);
+      return;
+    }
+    if (set_rgb_ == nullptr) {
+      error(frame.sequence, protocol::ErrorCode::kUnsupported);
+      return;
+    }
+    set_rgb_(frame.payload[0], frame.payload[1], frame.payload[2], rgb_context_);
+    reply(protocol::Type::kAck, frame.sequence);
+    reply(protocol::Type::kDone, frame.sequence);
+    return;
+  }
+  if (frame.type == protocol::Type::kSetVolume) {
+    if (frame.payload.size() != 1 || frame.payload[0] > 100) {
+      error(frame.sequence, protocol::ErrorCode::kMalformed);
+      return;
+    }
+    if (engine_ == nullptr) {
+      error(frame.sequence, protocol::ErrorCode::kUnsupported);
+      return;
+    }
+    engine_->set_volume(frame.payload[0]);
+    reply(protocol::Type::kAck, frame.sequence);
+    reply(protocol::Type::kDone, frame.sequence);
+    return;
+  }
+  if (frame.type == protocol::Type::kTestAll) {
+    if (!frame.payload.empty()) {
+      error(frame.sequence, protocol::ErrorCode::kMalformed);
+      return;
+    }
+    if (seen(frame.sequence)) {
+      reply(protocol::Type::kAck, frame.sequence);
+      return;
+    }
+    struct TestSentence { const char* language; const char* text; };
+    static constexpr TestSentence tests[] = {
+        {"en-US", "This is the American English voice."},
+        {"en-GB", "This is the British English voice."},
+        {"it-IT", "Questa è la voce italiana."},
+        {"de-DE", "Dies ist die deutsche Stimme."},
+        {"es-ES", "Esta es la voz española."},
+        {"fr-FR", "Ceci est la voix française."},
+    };
+    constexpr size_t test_count = sizeof(tests) / sizeof(tests[0]);
+    if (kQueueCapacity - queue_size_ < test_count) {
+      error(frame.sequence, protocol::ErrorCode::kQueueFull);
+      return;
+    }
+    for (size_t i = 0; i < test_count; ++i) {
+      protocol::SpeakRequest request;
+      request.priority = protocol::Priority::kNormal;
+      request.volume = 80;
+      request.pitch = 100;
+      request.speed = 100;
+      request.language = tests[i].language;
+      request.text = tests[i].text;
+      enqueue({frame.sequence, std::move(request), i == 0,
+               i + 1 == test_count});
+    }
+    remember(frame.sequence);
+    reply(protocol::Type::kAck, frame.sequence);
     return;
   }
   if (frame.type != protocol::Type::kSpeak) {
@@ -73,6 +153,7 @@ void SpeechServer::handle(const protocol::Frame& frame) {
       engine_ != nullptr) {
     engine_->stop();
     error(active_sequence_, protocol::ErrorCode::kPlayback);
+    remove_queued(active_sequence_);
     active_ = false;
   }
   if (!enqueue({frame.sequence, std::move(request)})) {
@@ -85,7 +166,7 @@ void SpeechServer::handle(const protocol::Frame& frame) {
 
 void SpeechServer::poll() {
   if (active_ && engine_ != nullptr && !engine_->speaking()) {
-    reply(protocol::Type::kDone, active_sequence_);
+    if (active_report_done_) reply(protocol::Type::kDone, active_sequence_);
     active_ = false;
   }
   if (active_ || queue_size_ == 0 || engine_ == nullptr) return;
@@ -94,11 +175,14 @@ void SpeechServer::poll() {
   --queue_size_;
   if (!engine_->start(entry.request)) {
     error(entry.sequence, protocol::ErrorCode::kPlayback);
+    remove_queued(entry.sequence);
     return;
   }
   active_sequence_ = entry.sequence;
+  active_report_done_ = entry.report_done;
   active_ = true;
-  reply(protocol::Type::kStarted, entry.sequence);
+  if (entry.report_started)
+    reply(protocol::Type::kStarted, entry.sequence);
 }
 
 }  // namespace guardian
