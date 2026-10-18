@@ -134,12 +134,15 @@ The S3 never starts Wi-Fi. BLE starts automatically as a central named
 `Guardian-S3`; `bt-status` reports both facts. Use the address type printed by
 `bt-scan` when connecting, with the media remote awake and in pairing mode.
 
-The same controls are available in the HALMET SensESP web UI under **Bluetooth
-remote (managed by S3)**. Choose **Scan for nearby devices**, save, and reload
-after the configured duration. Select the named remote from the device menu,
-choose **Pair selected device**, and save. Press a remote button and reload to
-read its HID hex code. Each mapping is a separate editable list item and has
-this form:
+The HALMET SensESP **Configuration** page stores the Bluetooth scan duration,
+selected remote and HID mappings. One-click Bluetooth actions are buttons on
+the **Control** page: refresh, scan, pair, disconnect, test and forget. Their
+in-progress and final result is shown under **Outlook Guardian** on the
+**Status** page. Configuration contains persistent setup only, so actions and
+status are not duplicated there.
+After scanning, reload Configuration and select the named remote before using
+the pair button. Press a remote button and reload Configuration to read its HID
+hex code. Each mapping is a separate editable list item and has this form:
 
 ```text
 0100=electrical.switches.anchorLight.state|true|Anchor light on
@@ -147,8 +150,20 @@ this form:
 
 The left side is the HID report shown by the page. The middle fields are a
 Signal K path and any valid JSON value. The optional final field is spoken by
-the S3 after the PUT request is sent. Select **Test last button** to replay the
-most recently received HID report through the same mapping without pressing the remote again.
+the S3 after the PUT request is sent. Use **Bluetooth: Test last button** on
+Control to replay the most recently received HID report through the same
+mapping without pressing the remote again. The Status page also shows a live
+**HALMET ↔ ESP32-S3** indicator maintained by periodic protocol PING/PONG
+traffic; it changes to disconnected if no valid S3 frame arrives for five
+seconds.
+
+The ESP32-S3 supports Bluetooth Low Energy but not Bluetooth Classic. Reports
+for the QXS-001 show the device being discovered through ESP32 Classic inquiry
+while BLE scanner applications do not see it. If an S3 scan remains empty with
+the QXS-001 awake and its blue pairing light flashing, that unit is advertising
+its Classic HID mode and cannot be paired by the S3 firmware. Supporting that
+mode requires a Classic-capable host such as HALMET's original ESP32, with its
+Bluetooth controller enabled alongside Wi-Fi.
 HALMET's own Bluetooth controller is stopped at boot; its Wi-Fi remains active
 for SensESP and Signal K.
 

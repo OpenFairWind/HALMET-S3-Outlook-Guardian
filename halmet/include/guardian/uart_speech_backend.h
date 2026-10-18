@@ -32,6 +32,7 @@ class UartSpeechBackend final : public SpeechBackend {
   bool set_rgb(uint8_t red, uint8_t green, uint8_t blue);
   bool test_all();
   bool set_volume(uint8_t volume);
+  bool ping();
   bool bluetooth_get_status();
   bool bluetooth_set_enabled(bool enabled);
   bool bluetooth_scan(uint8_t seconds);
@@ -51,6 +52,10 @@ class UartSpeechBackend final : public SpeechBackend {
   void poll() override;
   bool connected() const override { return connected_; }
   bool speaking() const override { return speaking_; }
+  uint32_t received_frames() const { return received_frames_; }
+  uint16_t last_sent_sequence() const { return last_sent_sequence_; }
+  uint16_t last_terminal_sequence() const { return last_terminal_sequence_; }
+  bool last_terminal_was_error() const { return last_terminal_was_error_; }
 
  private:
   static void on_frame(const protocol::Frame& frame, void* context);
@@ -62,6 +67,10 @@ class UartSpeechBackend final : public SpeechBackend {
   uint16_t next_sequence_ = 1;
   bool connected_ = false;
   bool speaking_ = false;
+  uint32_t received_frames_ = 0;
+  uint16_t last_sent_sequence_ = 0;
+  uint16_t last_terminal_sequence_ = 0;
+  bool last_terminal_was_error_ = false;
   uint8_t master_volume_ = 100;
   bool volume_configured_ = false;
   BluetoothState bluetooth_state_;

@@ -36,6 +36,7 @@ int main() {
   assert(backend.bluetooth_connect("aa:bb:cc:dd:ee:ff", 1));
   assert(!backend.bluetooth_connect("bad", 0));
   assert(backend.bluetooth_test());
+  assert(backend.ping());
 
   std::vector<guardian::protocol::Frame> decoded;
   auto capture = [](const guardian::protocol::Frame& f, void* p) {
@@ -43,7 +44,7 @@ int main() {
   };
   guardian::protocol::Parser parser(capture, nullptr, &decoded);
   parser.feed(transport.output.data(), transport.output.size());
-  assert(decoded.size() == 8 && decoded[0].type == guardian::protocol::Type::kSpeak);
+  assert(decoded.size() == 9 && decoded[0].type == guardian::protocol::Type::kSpeak);
   assert(decoded[0].sequence == 0x4000);
   assert(decoded[1].type == guardian::protocol::Type::kSetRgb);
   assert(decoded[1].payload == std::vector<uint8_t>({10, 20, 30}));
@@ -56,6 +57,8 @@ int main() {
   assert(decoded[5].payload == std::vector<uint8_t>({3}));
   assert(decoded[6].type == guardian::protocol::Type::kBtConnect);
   assert(decoded[7].type == guardian::protocol::Type::kBtTest);
+  assert(decoded[8].type == guardian::protocol::Type::kPing);
+  assert(backend.last_sent_sequence() == decoded[8].sequence);
 
   std::vector<uint8_t> hid;
   backend.on_bluetooth_hid(
@@ -68,6 +71,7 @@ int main() {
   transport.receive({guardian::protocol::Type::kBtHidEvent, 0,
                      {0x34, 0x12, 0x01, 0x02}});
   backend.poll();
+  assert(backend.received_frames() == 3);
   assert(backend.bluetooth_state().enabled);
   assert(backend.bluetooth_state().connected);
   assert(backend.bluetooth_state().wifi_off);
@@ -80,6 +84,7 @@ int main() {
   transport.receive({guardian::protocol::Type::kHello, 0, {}});
   transport.receive({guardian::protocol::Type::kStarted, decoded[0].sequence, {}});
   backend.poll();
+  assert(backend.received_frames() == 5);
   assert(backend.connected() && backend.speaking());
   std::vector<guardian::protocol::Frame> restored;
   guardian::protocol::Parser restore_parser(capture, nullptr, &restored);
@@ -90,5 +95,8 @@ int main() {
   assert(restored[0].payload == std::vector<uint8_t>({75}));
   transport.receive({guardian::protocol::Type::kDone, decoded[0].sequence, {}});
   backend.poll();
+  assert(backend.received_frames() == 6);
+  assert(backend.last_terminal_sequence() == decoded[0].sequence);
+  assert(!backend.last_terminal_was_error());
   assert(!backend.speaking());
 }

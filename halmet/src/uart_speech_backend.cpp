@@ -12,7 +12,9 @@ bool UartSpeechBackend::send(protocol::Type type, uint16_t sequence,
   if (transport_ == nullptr) return false;
   std::vector<uint8_t> wire;
   if (!protocol::encode({type, sequence, payload}, &wire)) return false;
-  return transport_->write(wire.data(), wire.size()) == wire.size();
+  const bool sent = transport_->write(wire.data(), wire.size()) == wire.size();
+  if (sent) last_sent_sequence_ = sequence;
+  return sent;
 }
 
 bool UartSpeechBackend::speak(const protocol::SpeakRequest& request) {
@@ -38,6 +40,10 @@ bool UartSpeechBackend::set_volume(uint8_t volume) {
   master_volume_ = volume;
   volume_configured_ = true;
   return send(protocol::Type::kSetVolume, next_sequence_++, {volume});
+}
+
+bool UartSpeechBackend::ping() {
+  return send(protocol::Type::kPing, next_sequence_++);
 }
 
 bool UartSpeechBackend::bluetooth_get_status() {
@@ -91,6 +97,7 @@ void UartSpeechBackend::poll() {
 
 void UartSpeechBackend::on_frame(const protocol::Frame& frame, void* context) {
   auto* self = static_cast<UartSpeechBackend*>(context);
+  ++self->received_frames_;
   switch (frame.type) {
     case protocol::Type::kHello:
       self->connected_ = true;
@@ -102,7 +109,15 @@ void UartSpeechBackend::on_frame(const protocol::Frame& frame, void* context) {
     case protocol::Type::kPong: self->connected_ = true; break;
     case protocol::Type::kStarted: self->speaking_ = true; break;
     case protocol::Type::kDone:
-    case protocol::Type::kError: self->speaking_ = false; break;
+      self->speaking_ = false;
+      self->last_terminal_sequence_ = frame.sequence;
+      self->last_terminal_was_error_ = false;
+      break;
+    case protocol::Type::kError:
+      self->speaking_ = false;
+      self->last_terminal_sequence_ = frame.sequence;
+      self->last_terminal_was_error_ = true;
+      break;
     case protocol::Type::kBtState:
       if (frame.payload.size() == 3 && frame.payload[0] == 1) {
         const uint8_t flags = frame.payload[1];

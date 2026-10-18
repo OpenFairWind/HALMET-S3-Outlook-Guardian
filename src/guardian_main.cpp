@@ -19,6 +19,8 @@
 #include "sensesp/system/system_status_led.h"
 #include "sensesp/transforms/debounce.h"
 #include "sensesp/ui/config_item.h"
+#include "sensesp/ui/status_page_item.h"
+#include "sensesp/ui/ui_button.h"
 #include "sensesp_app.h"
 #include "sensesp_app_builder.h"
 
@@ -350,7 +352,6 @@ class BluetoothConfig : public FileSystemSaveable {
   }
 
   bool to_json(JsonObject& root) override {
-    root["action"].to<JsonArray>().add("No action");
     root["scan_seconds"] = scan_seconds_;
     JsonArray selected = root["device"].to<JsonArray>();
     if (selected_device_.length() > 0) selected.add(selected_device_);
@@ -364,7 +365,6 @@ class BluetoothConfig : public FileSystemSaveable {
       if (line.length() > 0 && line[0] != '#') mappings.add(line);
       start = end + 1;
     }
-    root["status"] = status_;
     root["devices"] = devices_;
     root["last_hid"] = last_hid_;
     return true;
@@ -390,13 +390,6 @@ class BluetoothConfig : public FileSystemSaveable {
     } else if (root["mappings"].is<String>()) {
       mappings_ = root["mappings"].as<String>();
     }
-    String action = "No action";
-    if (root["action"].is<JsonArrayConst>() && root["action"].size() > 0)
-      action = root["action"][0].as<String>();
-    else if (root["action"].is<String>())
-      action = root["action"].as<String>();
-    if (action != "No action" && action != "none" && on_action_)
-      on_action_(action);
     return true;
   }
 
@@ -412,7 +405,6 @@ class BluetoothConfig : public FileSystemSaveable {
     return selected_device_.substring(first + 1, second).toInt();
   }
   const String& mappings() const { return mappings_; }
-  void set_status(const String& value) { status_ = value; }
   void set_devices(const String& value, const std::vector<String>& options) {
     devices_ = value;
     device_options_ = options;
@@ -420,9 +412,6 @@ class BluetoothConfig : public FileSystemSaveable {
       selected_device_ = device_options_[0];
   }
   void set_last_hid(const String& value) { last_hid_ = value; }
-  void on_action(std::function<void(const String&)> callback) {
-    on_action_ = std::move(callback);
-  }
 
  protected:
   friend const String ConfigSchema(const BluetoothConfig&);
@@ -430,10 +419,8 @@ class BluetoothConfig : public FileSystemSaveable {
   String selected_device_;
   std::vector<String> device_options_;
   String mappings_;
-  String status_ = "Waiting for the S3 connection…";
   String devices_ = "No scan results yet";
   String last_hid_ = "No button received yet";
-  std::function<void(const String&)> on_action_;
 };
 
 String json_string(String value) {
@@ -454,13 +441,11 @@ const String ConfigSchema(const BluetoothConfig& obj) {
   if (devices.length() == 0)
     devices = json_string("No devices yet — run a scan");
   return String(R"###({"type":"object","properties":{
-"status":{"title":"Connection status","description":"Bluetooth runs on the S3; HALMET keeps its radio off and uses Wi-Fi only.","type":"string","readOnly":true},
-"action":{"title":"Run an action","description":"Choose an action, then press Save. The selection returns to No action automatically.","type":"array","format":"select","uniqueItems":true,"maxItems":1,"items":{"type":"string","enum":["No action","Refresh status","Scan for nearby devices","Pair selected device","Disconnect device","Test last button","Forget all devices"]}},
 "scan_seconds":{"title":"Scan time","description":"Five seconds is normally enough. Increase it if the remote is difficult to discover.","type":"integer","minimum":1,"maximum":30},
 "device":{"title":"Remote device","description":"Scan first, reload the page, then select the remote by name, signal strength and address.","type":"array","format":"select","uniqueItems":true,"maxItems":1,"items":{"type":"string","enum":[)###") + devices + R"###(]}},
 "last_hid":{"title":"Last button code","description":"Press a remote button, then reload. Use this code at the start of a mapping.","type":"string","readOnly":true},
 "mappings":{"title":"Button mappings","description":"One mapping per item: HID_CODE=signal.k.path|JSON value|optional words to speak. Example: 0100=electrical.switches.anchorLight.state|true|Anchor light on","type":"array","items":{"type":"string"}},
-"devices":{"title":"Scan summary","type":"string","readOnly":true}
+"devices":{"title":"BLE scan results","description":"The ESP32-S3 scans Bluetooth Low Energy advertisements only. Bluetooth Classic remotes do not appear here.","type":"string","readOnly":true}
 }})###";
 }
 
@@ -535,6 +520,17 @@ std::shared_ptr<GuardianConfig> config;
 std::shared_ptr<SourcesConfig> sources;
 std::shared_ptr<BluetoothConfig> bluetooth_config;
 std::shared_ptr<AlarmLed> alarm_led;
+std::shared_ptr<StatusPageItem<String>> s3_link_status;
+std::shared_ptr<StatusPageItem<String>> bluetooth_action_status;
+bool s3_link_up = false;
+uint32_t s3_last_frame_ms = 0;
+uint32_t s3_last_frame_count = 0;
+
+enum class BluetoothAction { kNone, kRefresh, kScan, kPair, kDisconnect,
+                             kTest, kForget };
+BluetoothAction bluetooth_action = BluetoothAction::kNone;
+uint32_t bluetooth_action_started_ms = 0;
+uint16_t bluetooth_action_sequence = 0;
 class ArduinoSerialTransport final : public guardian::ByteTransport {
  public:
   enum class Mode { kAuto, kGpio, kUsb };
@@ -571,6 +567,53 @@ tNMEA2000* nmea2000;
 // When the last NMEA 2000 message of any kind was received
 bool n2k_message_received = false;
 uint32_t n2k_message_at_ms = 0;
+
+void set_bluetooth_action_status(const String& value) {
+  if (bluetooth_action_status != nullptr) bluetooth_action_status->set(value);
+}
+
+void run_bluetooth_action(BluetoothAction action) {
+  bool sent = false;
+  String progress;
+  switch (action) {
+    case BluetoothAction::kRefresh:
+      progress = "Refreshing Bluetooth status…";
+      sent = speech->bluetooth_get_status();
+      break;
+    case BluetoothAction::kScan:
+      progress = "Scanning for Bluetooth devices…";
+      sent = speech->bluetooth_scan(bluetooth_config->scan_seconds());
+      break;
+    case BluetoothAction::kPair:
+      progress = "Pairing selected Bluetooth device…";
+      sent = speech->bluetooth_connect(bluetooth_config->address().c_str(),
+                                       bluetooth_config->address_type());
+      break;
+    case BluetoothAction::kDisconnect:
+      progress = "Disconnecting Bluetooth device…";
+      sent = speech->bluetooth_disconnect();
+      break;
+    case BluetoothAction::kTest:
+      progress = "Testing the last Bluetooth button…";
+      sent = speech->bluetooth_test();
+      break;
+    case BluetoothAction::kForget:
+      progress = "Forgetting all Bluetooth devices…";
+      sent = speech->bluetooth_forget();
+      break;
+    default:
+      return;
+  }
+  if (!sent) {
+    bluetooth_action = BluetoothAction::kNone;
+    set_bluetooth_action_status("Command could not be sent to the S3");
+    return;
+  }
+  bluetooth_action = action;
+  bluetooth_action_started_ms = millis();
+  bluetooth_action_sequence = speech->last_sent_sequence();
+  set_bluetooth_action_status(progress);
+}
 
 void say(const String& text) {
   if (speech == nullptr) return;
@@ -953,7 +996,7 @@ void draw_streams() {
   display.setCursor(0, 8);
   display.print(signalk_connected() ? "SK:ON" : "SK:--");
   print_right_aligned(n2k_active ? "N2K:ON" : "N2K:--", 8);
-  if (speech == nullptr || !speech->connected()) {
+  if (speech == nullptr || !s3_link_up) {
     display.setCursor((kDisplayWidth - 6 * 8) / 2, 8);
     display.print("NO AUDIO");
   }
@@ -1489,11 +1532,11 @@ void setup() {
   bluetooth_config =
       std::make_shared<BluetoothConfig>("/Outlook Guardian/Bluetooth Remote");
   ConfigItem(bluetooth_config)
-      ->set_title("Bluetooth remote (managed by S3)")
+      ->set_title("BLE remote setup (ESP32-S3)")
       ->set_description(
-          "Scan, pair, test and disconnect BLE HID remotes through the S3. "
-          "Mappings issue custom Signal K PUT requests; reload after a scan "
-          "or button press to refresh read-only results.");
+          "Persistent setup only: scan duration, selected BLE device and HID "
+          "mappings. Run actions on Control and monitor results on Status. "
+          "Bluetooth Classic remotes cannot be discovered by ESP32-S3.");
 
   // One image supports the production GPIO UART and the developer USB route.
   // In Auto mode frames go to both; replies may arrive from either. The host
@@ -1521,37 +1564,75 @@ void setup() {
       speech_transport.get(), initial_sequence);
   speech->set_volume(config->volume_percent());
   speech->on_bluetooth_hid(handle_hid_report);
-  bluetooth_config->on_action([](const String& action) {
-    bool sent = false;
-    if (action == "Refresh status") {
-      sent = speech->bluetooth_get_status();
-    } else if (action == "Scan for nearby devices") {
-      sent = speech->bluetooth_scan(bluetooth_config->scan_seconds());
-    } else if (action == "Pair selected device") {
-      sent = speech->bluetooth_connect(
-          bluetooth_config->address().c_str(),
-          bluetooth_config->address_type());
-    } else if (action == "Disconnect device") {
-      sent = speech->bluetooth_disconnect();
-    } else if (action == "Test last button") {
-      sent = speech->bluetooth_test();
-    } else if (action == "Forget all devices") {
-      sent = speech->bluetooth_forget();
-    }
-    bluetooth_config->set_status(sent ? "Command sent to S3"
-                                       : "Command could not be sent");
-  });
+  s3_link_status = std::make_shared<StatusPageItem<String>>(
+      "HALMET ↔ ESP32-S3", "Checking…", "Outlook Guardian", 100);
+  bluetooth_action_status = std::make_shared<StatusPageItem<String>>(
+      "Bluetooth action", "Idle", "Outlook Guardian", 110);
+  UIButton::add("guardian-bt-refresh", "Bluetooth: Refresh status", false)
+      ->attach([]() { run_bluetooth_action(BluetoothAction::kRefresh); });
+  UIButton::add("guardian-bt-scan", "Bluetooth: Scan for devices", false)
+      ->attach([]() { run_bluetooth_action(BluetoothAction::kScan); });
+  UIButton::add("guardian-bt-pair", "Bluetooth: Pair selected device", false)
+      ->attach([]() { run_bluetooth_action(BluetoothAction::kPair); });
+  UIButton::add("guardian-bt-disconnect", "Bluetooth: Disconnect", false)
+      ->attach([]() { run_bluetooth_action(BluetoothAction::kDisconnect); });
+  UIButton::add("guardian-bt-test", "Bluetooth: Test last button", false)
+      ->attach([]() { run_bluetooth_action(BluetoothAction::kTest); });
+  UIButton::add("guardian-bt-forget", "Bluetooth: Forget all devices", true)
+      ->attach([]() { run_bluetooth_action(BluetoothAction::kForget); });
   // UART is nonblocking and advisory BUSY is deliberately not used as truth.
   event_loop()->onRepeat(5, []() { speech->poll(); });
+  event_loop()->onRepeat(2000, []() { speech->ping(); });
   event_loop()->onRepeat(500, []() {
+    const uint32_t now = millis();
+    const uint32_t received = speech->received_frames();
+    if (received != s3_last_frame_count) {
+      s3_last_frame_count = received;
+      s3_last_frame_ms = now;
+    }
+    s3_link_up = received > 0 && now - s3_last_frame_ms < 5000;
+    const String link = s3_link_up
+                            ? "Connected · last valid response " +
+                                  String((now - s3_last_frame_ms) / 1000) +
+                                  " s ago · " + config->transport()
+                            : "Disconnected · no valid response for 5 s · " +
+                                  config->transport();
+    s3_link_status->set(link);
+
     const auto& state = speech->bluetooth_state();
-    bluetooth_config->set_status(
-        String(state.enabled ? "BLE ready" : "BLE unavailable") + " · " +
-        (state.scanning ? "Scanning" : "Idle") + " · " +
-        (state.connected ? "Remote connected" : "No remote connected") +
-        " · " + (state.wifi_off ? "S3 Wi-Fi off" : "Check S3 Wi-Fi") +
-        " · " + String(static_cast<int>(state.bonds)) +
-        (state.bonds == 1 ? " bonded device" : " bonded devices"));
+    if (bluetooth_action != BluetoothAction::kNone) {
+      const uint32_t elapsed = now - bluetooth_action_started_ms;
+      bool finished = false;
+      String result;
+      if (speech->last_terminal_sequence() == bluetooth_action_sequence) {
+        finished = true;
+        if (speech->last_terminal_was_error()) {
+          result = "Action failed · S3 returned an error";
+        } else if (bluetooth_action == BluetoothAction::kScan) {
+          result = "Scan complete · " +
+                   String(static_cast<int>(speech->bluetooth_devices().size())) +
+                   " device(s) found";
+        } else if (bluetooth_action == BluetoothAction::kPair) {
+          result = "Pairing complete";
+        } else if (bluetooth_action == BluetoothAction::kDisconnect) {
+          result = "Disconnect complete";
+        } else {
+          result = "Action completed";
+        }
+      }
+      if (finished) {
+        if (bluetooth_action == BluetoothAction::kPair ||
+            bluetooth_action == BluetoothAction::kDisconnect ||
+            bluetooth_action == BluetoothAction::kForget) {
+          speech->bluetooth_get_status();
+        }
+        bluetooth_action = BluetoothAction::kNone;
+        set_bluetooth_action_status(result);
+      } else if (elapsed > 15000) {
+        bluetooth_action = BluetoothAction::kNone;
+        set_bluetooth_action_status("Action timed out · check the S3 link");
+      }
+    }
     String devices;
     std::vector<String> options;
     for (const auto& device : speech->bluetooth_devices()) {
@@ -1566,7 +1647,13 @@ void setup() {
       devices += name + " — " + String(static_cast<int>(device.rssi)) +
                  " dBm — " + device.address.c_str();
     }
-    if (devices.length() > 0) bluetooth_config->set_devices(devices, options);
+    if (devices.length() == 0) {
+      devices = state.scanning
+                    ? "Scanning… keep the remote awake and in pairing mode"
+                    : "No BLE devices found. Bluetooth Classic devices such "
+                      "as the QXS-001 may not advertise in BLE mode.";
+    }
+    bluetooth_config->set_devices(devices, options);
   });
   speech->bluetooth_get_status();
   if (config->welcome_enabled()) {
@@ -1598,7 +1685,7 @@ void setup() {
     process_alarms();
     check_access_point_fallback();
     update_display();
-    alarm_led->set_fault(speech == nullptr || !speech->connected());
+    alarm_led->set_fault(speech == nullptr || !s3_link_up);
   });
 }
 

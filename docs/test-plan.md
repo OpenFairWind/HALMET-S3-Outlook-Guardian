@@ -87,6 +87,16 @@ and its Auto mode completed SET_VOLUME, BT_GET_STATUS and the startup SPEAK
 over the USB router. The startup sequence `0xB23B` returned
 ACK/STARTED/DONE.
 
+The SensESP UI subsequently replaced the saved Bluetooth action selector with
+native Control-page buttons. Each operation is tracked by its exact protocol
+sequence through DONE or ERROR and publishes progress/results on the Status
+page. HALMET also sends a PING every two seconds and reports the S3 link down
+when no valid response has arrived for five seconds. Host protocol tests pass
+for the heartbeat counters and terminal-sequence tracking. The resulting
+HALMET image used 54,084 bytes RAM and 1,757,216 bytes flash and was flashed
+with verified hashes. End-to-end heartbeat verification remains pending
+because the S3 USB serial device was not present after flashing.
+
 The following broader integration and qualification tests remain open:
 
 - HALMET continues Signal K/N2K alarm processing, LED/OLED, ACK and snooze with
