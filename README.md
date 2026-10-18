@@ -1,4 +1,26 @@
-# HALMET Example Firmware
+# HALMET S3 Outlook Guardian
+
+This repository is being evolved from the HALMET example firmware into a
+distributed Outlook Guardian. HALMET remains responsible for marine alarms and
+an ESP32-S3 is a UART-connected PicoTTS speech coprocessor. The existing HALMET
+example application is intentionally still the default until the upstream
+Guardian state machine has been faithfully integrated and compile-tested; the
+portable protocol and speech-server foundation is available now. The preserved
+example builds as `halmet`; the ported application builds as `halmet_guardian`.
+
+See [architecture](docs/architecture.md), [wire protocol](docs/protocol.md),
+[upstream audit](docs/upstream-audit.md), [test plan](docs/test-plan.md) and the
+conditional [wiring](hardware/wiring.md) and [power budget](hardware/power-budget.md).
+
+Run the hardware-independent tests with:
+
+```sh
+cmake -S . -B build-host
+cmake --build build-host --parallel
+ctest --test-dir build-host --output-on-failure
+```
+
+## Original HALMET example
 
 This repository provides example firmware for [HALMET: Hat Labs Marine Engine & Tank interface](https://shop.hatlabs.fi/products/halmet).
 

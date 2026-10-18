@@ -1,0 +1,8 @@
+{
+  "name": "guardian-protocol",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": { "srcDir": "src", "includeDir": "include" }
+}

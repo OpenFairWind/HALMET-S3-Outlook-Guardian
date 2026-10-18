@@ -102,7 +102,9 @@ const adsGain_t kADS1115Gain = GAIN_ONE;
 // GPIO 33 will output a pulse wave at 380 Hz with a 50% duty cycle.
 // If this output and GND are connected to one of the digital inputs, it can
 // be used to test that the frequency counter functionality is working.
-#define ENABLE_TEST_OUTPUT_PIN
+// GPIO33 is reserved as the distributed Guardian BUSY input. Define
+// ENABLE_TEST_OUTPUT_PIN explicitly only on hardware without the S3 link.
+// #define ENABLE_TEST_OUTPUT_PIN
 #ifdef ENABLE_TEST_OUTPUT_PIN
 const int kTestOutputPin = GPIO_NUM_33;
 // With the default pulse rate of 100 pulses per revolution (configured in

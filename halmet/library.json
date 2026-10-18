@@ -1,0 +1,9 @@
+{
+  "name": "guardian-halmet",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "dependencies": { "guardian-protocol": "*" },
+  "build": { "srcDir": "src", "includeDir": "include" }
+}

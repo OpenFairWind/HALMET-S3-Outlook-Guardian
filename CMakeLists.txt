@@ -1,3 +1,10 @@
 cmake_minimum_required(VERSION 3.16.0)
+
+if(NOT DEFINED ENV{IDF_PATH})
+  project(halmet_guardian_host_tests LANGUAGES CXX)
+  enable_testing()
+  add_subdirectory(shared/guardian_protocol)
+  return()
+endif()
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(HALMET-example-firmware)
