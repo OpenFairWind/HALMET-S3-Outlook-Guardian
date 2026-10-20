@@ -112,3 +112,36 @@ The following broader integration and qualification tests remain open:
 
 No power meter or oscilloscope evidence is available, so electrical,
 waveform-timing, peak-current and thermal qualification remain unverified.
+
+## Release verification on 2026-10-20
+
+The final release candidate was tested and flashed on the attached HALMET and
+ESP32-S3:
+
+- Fresh host build: 3/3 protocol, speech-server and UART-backend tests passed.
+- `halmet_guardian` built at 54,116 bytes RAM and 1,763,188 bytes flash.
+- `esp32s3_speech` built at 38,228 bytes RAM and 7,333,303 bytes flash after
+  native USB CDC was enabled; it remained below the 7,733,248-byte slot.
+- Both boards were flashed over USB and every written image passed hash
+  verification. HALMET used 115200 upload baud; the S3 used 2 Mbaud.
+- S3 USB PING returned PONG. BLE status reported enabled, not scanning, not
+  connected, Wi-Fi off, and zero bonds. A three-second scan returned seven
+  connectable BLE devices and completed ACK/STARTED/DONE.
+- An Italian speech request (`Test firmware Guardian completato`) completed
+  ACK/STARTED/DONE. Audible quality remains a human observation rather than an
+  automated assertion.
+- HALMET `/control`, Bluetooth configuration and `/api/info` responded after
+  flashing. The live status reported `HALMET ↔ ESP32-S3: Connected`, with the
+  last valid response zero seconds old, and Bluetooth refresh completed.
+- The configured Signal K endpoint `192.168.1.69:3000` was unreachable from the
+  test host and HALMET correctly reported Signal K disconnected. End-to-end
+  Signal K PUT validation could therefore not be completed in this run; this
+  was classified as an unavailable external server, not a firmware pass.
+- macOS Bluetooth Settings showed the QXS-001, but a direct CoreBluetooth BLE
+  scan and the S3 BLE scan did not. The tested QXS-001 is therefore operating as
+  Bluetooth Classic HID and cannot be paired by the BLE-only ESP32-S3.
+
+The release also fixes active-scan response merging so names arriving after the
+first advertisement are retained, keeps production traffic on UART1 GPIO2/1,
+and mirrors the framed protocol over native USB CDC for the documented CLI and
+developer router.

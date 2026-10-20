@@ -12,10 +12,11 @@ There is no 5 V output on J201. The schematic says its USB 5 V two-pin header
 was downgraded to a single test point for safety. Use a separate fused 5 V
 regulator for the S3 and amplifier.
 
-ESP32-S3-DevKitC-1 exposes GPIO44/U0RXD on J3 pin 3, GPIO43/U0TXD on J3 pin 2,
-GPIO4/5/6/7 on J1 pins 4/5/6/7, EN on J1 pin 3, GPIO0 on J3 pin 14 and 5 V/GND
-on J1 pins 21/22. Espressif calls USB, 5 V-header and 3V3-header supply mutually
-exclusive. Do not attach USB while externally feeding 5 V.
+ESP32-S3-DevKitC-1 exposes GPIO2 on J3 pin 5 and GPIO1 on J3 pin 4 for the
+Guardian UART1 link. GPIO4/5/6/7 are on J1 pins 4/5/6/7, EN is on J1 pin 3,
+GPIO0 is on J3 pin 14, and 5 V/GND are on J1 pins 21/22. Espressif calls USB,
+5 V-header and 3V3-header supply mutually exclusive. Do not attach USB while
+externally feeding 5 V.
 
 MAX98357A accepts 2.5–5.5 V. At 5 V it specifies up to 3.2 W into 4 ohms and a
 2.8 A current limit. Those are design bounds, not measured module load.

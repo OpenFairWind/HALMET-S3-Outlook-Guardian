@@ -6,10 +6,11 @@ an ESP32-S3 is a UART-connected, offline PicoTTS speech coprocessor. The ported
 Guardian state machine, portable protocol, bounded speech server and
 six-language S3 image are host- or compile-tested as documented. The preserved
 example builds as `halmet`; the distributed application builds as
-`halmet_guardian`. Physical audio and electrical qualification remain pending.
+`halmet_guardian`. Prototype UART, BLE scanning and audio have passed bench
+smoke tests; electrical and vessel qualification remain pending.
 
 Start with the [documentation overview](docs/index.md) and the step-by-step
-[development playground](docs/getting_started.md). The overview links the
+[installation and setup guide](docs/installation.md). The overview links the
 architecture, protocol, audit and test evidence. A separate
 [hardware reproduction guide](docs/hardware/index.md) provides the BOM,
 reference schematic, assembly sequence, verification matrix and experiment

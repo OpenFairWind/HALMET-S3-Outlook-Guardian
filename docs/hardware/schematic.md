@@ -10,8 +10,8 @@ processor-side logic ground.
 ```text
  HALMET J201                          ESP32-S3-DevKitC-1             MAX98357A
  ──────────                          ───────────────────             ─────────
- pin 7  GPIO16  TX  ───────────────> J3-3  GPIO44 / U0RXD
- pin 5  GPIO17  RX  <─────────────── J3-2  GPIO43 / U0TXD
+ pin 7  GPIO16  TX  ───────────────> J3-5  GPIO2 / UART1 RX
+ pin 5  GPIO17  RX  <─────────────── J3-4  GPIO1 / UART1 TX
  pin 9  GPIO33 BUSY <─────────────── J1-7  GPIO7
  processor GND      ──────────────── J1-22 GND ──────────────────── GND
                                           J1-4 GPIO4  ───────────── LRC/WS
@@ -34,8 +34,8 @@ probe. Use a differential probe or a properly isolated measurement method.
 
 | Net | Source | Destination | Electrical rule | Firmware definition |
 |---|---|---|---|---|
-| `H_TX_S_RX` | HALMET J201-7, GPIO16 | S3 J3-3, GPIO44 | 3.3 V UART, 115200 8N1 | `Serial2` TX / `GUARDIAN_S3_RX_PIN` |
-| `S_TX_H_RX` | S3 J3-2, GPIO43 | HALMET J201-5, GPIO17 | 3.3 V UART, boot text tolerated | `GUARDIAN_S3_TX_PIN` / `Serial2` RX |
+| `H_TX_S_RX` | HALMET J201-7, GPIO16 | S3 J3-5, GPIO2 | 3.3 V UART1, 115200 8N1 | `Serial2` TX / `GUARDIAN_S3_RX_PIN` |
+| `S_TX_H_RX` | S3 J3-4, GPIO1 | HALMET J201-5, GPIO17 | 3.3 V UART1, 115200 8N1 | `GUARDIAN_S3_TX_PIN` / `Serial2` RX |
 | `S_BUSY` | S3 J1-7, GPIO7 | HALMET J201-9, GPIO33 | 3.3 V, advisory only | `GUARDIAN_S3_BUSY_PIN` |
 | `I2S_LRC` | S3 J1-4, GPIO4 | A3 LRC/WS | 3.3 V digital | `MAX98357A_LRC_PIN` |
 | `I2S_BCLK` | S3 J1-5, GPIO5 | A3 BCLK | 3.3 V digital | `MAX98357A_BCLK_PIN` |

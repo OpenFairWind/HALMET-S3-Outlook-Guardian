@@ -44,16 +44,18 @@ No S3 failure is allowed to block HALMET alarm processing or local indication.
 
 ## Reading map
 
-1. [Getting started](getting_started.md) establishes a reproducible development
+1. [Installation and setup](installation.md) covers firmware flashing, wiring,
+   first boot, Signal K, BLE remotes, mappings and acceptance tests.
+2. [Getting started](getting_started.md) establishes a reproducible development
    playground and runs every hardware-independent check.
-2. [Architecture](architecture.md) defines responsibilities, invariants and
+3. [Architecture](architecture.md) defines responsibilities, invariants and
    failure containment.
-3. [UART protocol](protocol.md) specifies the wire format and provides examples.
-4. [Hardware guide](hardware/index.md) contains the BOM, reference schematic,
+4. [UART protocol](protocol.md) specifies the wire format and provides examples.
+5. [Hardware guide](hardware/index.md) contains the BOM, reference schematic,
    assembly procedure and measurement record.
-5. [Test plan](test-plan.md) separates automated evidence from unperformed bench
+6. [Test plan](test-plan.md) separates automated evidence from unperformed bench
    work.
-6. [Upstream audit](upstream-audit.md) records provenance and compatibility.
+7. [Upstream audit](upstream-audit.md) records provenance and compatibility.
 
 ## Current evidence boundary
 
@@ -62,6 +64,7 @@ speech lifecycle, RGB, master-volume and all-language test commands. The HALMET
 example, distributed Guardian and six-language S3 firmware are build-tested.
 Signed UART update messages remain fail-closed until a production public trust
 root and manifest policy are supplied. ROM recovery is unavailable until the
-documented open-drain EN/GPIO0 circuitry physically exists. Audio, power,
-thermal, USB-backfeed and combined-system galvanic-isolation tests have not been
-performed and are not claimed.
+documented open-drain EN/GPIO0 circuitry physically exists. Prototype speech,
+GPIO UART, USB protocol and BLE scanning have passed smoke tests. Power,
+thermal, USB-backfeed and combined-system galvanic-isolation qualification has
+not been performed and is not claimed.

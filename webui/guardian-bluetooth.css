@@ -1,0 +1,17 @@
+.guardian-bluetooth { max-width: 960px; margin: 0 auto; }
+.guardian-section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
+.guardian-device-list { overflow: hidden; border: 1px solid var(--bs-border-color); border-radius: 1.25rem; background: var(--bs-tertiary-bg); }
+.guardian-device { padding: 1rem 1.25rem; border-bottom: 1px solid var(--bs-border-color); background: var(--bs-tertiary-bg); }
+.guardian-device:last-child { border-bottom: 0; }
+.guardian-device-main { display: flex; gap: 1rem; align-items: center; }
+.guardian-device-icon { flex: 0 0 2.5rem; width: 2.5rem; height: 2.5rem; display: grid; place-items: center; border-radius: .75rem; font-size: 1.35rem; background: var(--bs-primary); color: white; }
+.guardian-device-name { min-width: 0; flex: 1; font-size: 1.05rem; }
+.guardian-address { color: var(--bs-secondary-color); font: .72rem monospace; }
+.guardian-last-input { margin: .75rem 0 0 3.5rem; color: var(--bs-secondary-color); font-size: .85rem; }
+.guardian-mappings { margin: 1rem 0 0 3.5rem; padding-top: 1rem; border-top: 1px solid var(--bs-border-color); }
+.guardian-empty, .guardian-loading { padding: 1.25rem; color: var(--bs-secondary-color); }
+@media (max-width: 600px) {
+  .guardian-device-main { align-items: flex-start; flex-wrap: wrap; }
+  .guardian-device-main > .d-flex { width: 100%; margin-left: 3.5rem; justify-content: flex-start !important; }
+  .guardian-last-input, .guardian-mappings { margin-left: 0; }
+}

@@ -347,106 +347,186 @@ const String ConfigSchema(const SourcesConfig& obj) {
 
 class BluetoothConfig : public FileSystemSaveable {
  public:
+  struct Profile {
+    String address;
+    int address_type = 0;
+    String name = "Bluetooth remote";
+    String mappings;
+    String last_hid = "";
+  };
+
   explicit BluetoothConfig(const String& path) : FileSystemSaveable(path) {
     load();
   }
 
   bool to_json(JsonObject& root) override {
     root["scan_seconds"] = scan_seconds_;
-    JsonArray selected = root["device"].to<JsonArray>();
-    if (selected_device_.length() > 0) selected.add(selected_device_);
-    JsonArray mappings = root["mappings"].to<JsonArray>();
-    int start = 0;
-    while (start < static_cast<int>(mappings_.length())) {
-      int end = mappings_.indexOf('\n', start);
-      if (end < 0) end = mappings_.length();
-      String line = mappings_.substring(start, end);
-      line.trim();
-      if (line.length() > 0 && line[0] != '#') mappings.add(line);
-      start = end + 1;
+    root["selected"] = selected_address_;
+    root["connected"] = connected_address_;
+    root["scanning"] = scanning_;
+    JsonArray profiles = root["profiles"].to<JsonArray>();
+    for (const Profile& profile : profiles_) {
+      JsonObject item = profiles.add<JsonObject>();
+      item["address"] = profile.address;
+      item["address_type"] = profile.address_type;
+      item["name"] = profile.name;
+      item["last_hid"] = profile.last_hid;
+      JsonArray mappings = item["mappings"].to<JsonArray>();
+      append_lines(mappings, profile.mappings);
     }
-    root["devices"] = devices_;
-    root["last_hid"] = last_hid_;
+    JsonArray nearby = root["nearby"].to<JsonArray>();
+    for (const Profile& device : nearby_) {
+      JsonObject item = nearby.add<JsonObject>();
+      item["address"] = device.address;
+      item["address_type"] = device.address_type;
+      item["name"] = device.name;
+      item["rssi"] = device.last_hid.toInt();
+    }
     return true;
   }
 
   bool from_json(const JsonObject& root) override {
     scan_seconds_ = constrain(root["scan_seconds"] | scan_seconds_, 1, 30);
-    if (root["device"].is<JsonArrayConst>() && root["device"].size() > 0)
-      selected_device_ = root["device"][0].as<String>();
-    // Migrate the first version, which stored address and type separately.
-    if (selected_device_.length() == 0 && root["address"].is<String>()) {
-      selected_device_ = root["address"].as<String>() + "|" +
-                         String(root["address_type"] | 0);
+    selected_address_ = root["selected"] | selected_address_;
+    if (root["profiles"].is<JsonArrayConst>()) {
+      std::vector<Profile> parsed;
+      for (JsonObjectConst item : root["profiles"].as<JsonArrayConst>()) {
+        Profile profile;
+        profile.address = item["address"] | "";
+        if (profile.address.length() == 0 || parsed.size() >= 8) continue;
+        profile.address_type = item["address_type"] | 0;
+        profile.name = item["name"] | "Bluetooth remote";
+        profile.last_hid = item["last_hid"] | "";
+        if (item["mappings"].is<JsonArrayConst>()) {
+          for (JsonVariantConst mapping : item["mappings"].as<JsonArrayConst>()) {
+            String line = mapping.as<String>();
+            line.trim();
+            if (line.length() > 0)
+              profile.mappings +=
+                  (profile.mappings.length() > 0 ? "\n" : "") + line;
+          }
+        }
+        parsed.push_back(profile);
+      }
+      profiles_ = parsed;
     }
-    if (root["mappings"].is<JsonArrayConst>()) {
-      mappings_ = "";
+    // Migrate the first Bluetooth UI, which stored one selected device and a
+    // global mapping list.
+    String legacy_device;
+    if (root["device"].is<JsonArrayConst>() && root["device"].size() > 0)
+      legacy_device = root["device"][0].as<String>();
+    // Migrate the first version, which stored address and type separately.
+    if (legacy_device.length() == 0 && root["address"].is<String>())
+      legacy_device = root["address"].as<String>() + "|" +
+                      String(root["address_type"] | 0);
+    if (profiles_.empty() && legacy_device.length() > 0) {
+      Profile profile;
+      const int first = legacy_device.indexOf('|');
+      const int second = legacy_device.indexOf('|', first + 1);
+      const int third = legacy_device.indexOf('|', second + 1);
+      profile.address = first < 0 ? legacy_device
+                                  : legacy_device.substring(0, first);
+      profile.address_type = first < 0
+                                 ? 0
+                                 : legacy_device.substring(first + 1, second)
+                                       .toInt();
+      if (third >= 0) profile.name = legacy_device.substring(third + 1);
       for (JsonVariantConst item : root["mappings"].as<JsonArrayConst>()) {
         String line = item.as<String>();
         line.trim();
         if (line.length() > 0)
-          mappings_ += (mappings_.length() > 0 ? "\n" : "") + line;
+          profile.mappings +=
+              (profile.mappings.length() > 0 ? "\n" : "") + line;
       }
-    } else if (root["mappings"].is<String>()) {
-      mappings_ = root["mappings"].as<String>();
+      if (root["mappings"].is<String>())
+        profile.mappings = root["mappings"].as<String>();
+      profiles_.push_back(profile);
+      selected_address_ = profile.address;
     }
     return true;
   }
 
   int scan_seconds() const { return scan_seconds_; }
-  String address() const {
-    const int separator = selected_device_.indexOf('|');
-    return separator < 0 ? selected_device_ : selected_device_.substring(0, separator);
-  }
+  const String& address() const { return selected_address_; }
   int address_type() const {
-    const int first = selected_device_.indexOf('|');
-    if (first < 0) return 0;
-    const int second = selected_device_.indexOf('|', first + 1);
-    return selected_device_.substring(first + 1, second).toInt();
+    const Profile* profile = selected_profile();
+    if (profile != nullptr) return profile->address_type;
+    for (const Profile& device : nearby_)
+      if (device.address == selected_address_) return device.address_type;
+    return 0;
   }
-  const String& mappings() const { return mappings_; }
-  void set_devices(const String& value, const std::vector<String>& options) {
-    devices_ = value;
-    device_options_ = options;
-    if (selected_device_.length() == 0 && device_options_.size() == 1)
-      selected_device_ = device_options_[0];
+  const String& mappings() const {
+    static const String empty;
+    const Profile* profile = selected_profile();
+    return profile == nullptr ? empty : profile->mappings;
   }
-  void set_last_hid(const String& value) { last_hid_ = value; }
+  void set_nearby(const std::vector<Profile>& devices, bool scanning) {
+    nearby_ = devices;
+    scanning_ = scanning;
+  }
+  void select_device(const String& address, int address_type = 0,
+                     const String& name = "Bluetooth remote") {
+    selected_address_ = address;
+    if (selected_profile() != nullptr) return;
+    Profile profile;
+    profile.address = address;
+    profile.address_type = address_type;
+    profile.name = name;
+    profiles_.push_back(profile);
+  }
+  void set_connected(bool connected) {
+    if (!connected) {
+      connected_address_ = "";
+    } else if (connected_address_.length() == 0) {
+      connected_address_ = selected_address_;
+    }
+  }
+  void set_last_hid(const String& value) {
+    Profile* profile = selected_profile();
+    if (profile != nullptr) profile->last_hid = value;
+  }
+  String last_hid() const {
+    const Profile* profile = selected_profile();
+    return profile == nullptr ? "" : profile->last_hid;
+  }
 
  protected:
+  static void append_lines(JsonArray& output, const String& text) {
+    int start = 0;
+    while (start < static_cast<int>(text.length())) {
+      int end = text.indexOf('\n', start);
+      if (end < 0) end = text.length();
+      String line = text.substring(start, end);
+      line.trim();
+      if (line.length() > 0 && line[0] != '#') output.add(line);
+      start = end + 1;
+    }
+  }
+  Profile* selected_profile() {
+    for (Profile& profile : profiles_)
+      if (profile.address == selected_address_) return &profile;
+    return nullptr;
+  }
+  const Profile* selected_profile() const {
+    for (const Profile& profile : profiles_)
+      if (profile.address == selected_address_) return &profile;
+    return nullptr;
+  }
   friend const String ConfigSchema(const BluetoothConfig&);
   int scan_seconds_ = 5;
-  String selected_device_;
-  std::vector<String> device_options_;
-  String mappings_;
-  String devices_ = "No scan results yet";
-  String last_hid_ = "No button received yet";
+  String selected_address_;
+  String connected_address_;
+  bool scanning_ = false;
+  std::vector<Profile> profiles_;
+  std::vector<Profile> nearby_;
 };
 
-String json_string(String value) {
-  value.replace("\\", "\\\\");
-  value.replace("\"", "\\\"");
-  value.replace("\n", "\\n");
-  return "\"" + value + "\"";
-}
-
-const String ConfigSchema(const BluetoothConfig& obj) {
-  String devices;
-  for (const String& option : obj.device_options_) {
-    if (devices.length() > 0) devices += ",";
-    devices += json_string(option);
-  }
-  if (devices.length() == 0 && obj.selected_device_.length() > 0)
-    devices = json_string(obj.selected_device_);
-  if (devices.length() == 0)
-    devices = json_string("No devices yet — run a scan");
-  return String(R"###({"type":"object","properties":{
+const String ConfigSchema(const BluetoothConfig&) {
+  return R"###({"type":"object","properties":{
 "scan_seconds":{"title":"Scan time","description":"Five seconds is normally enough. Increase it if the remote is difficult to discover.","type":"integer","minimum":1,"maximum":30},
-"device":{"title":"Remote device","description":"Scan first, reload the page, then select the remote by name, signal strength and address.","type":"array","format":"select","uniqueItems":true,"maxItems":1,"items":{"type":"string","enum":[)###") + devices + R"###(]}},
-"last_hid":{"title":"Last button code","description":"Press a remote button, then reload. Use this code at the start of a mapping.","type":"string","readOnly":true},
-"mappings":{"title":"Button mappings","description":"One mapping per item: HID_CODE=signal.k.path|JSON value|optional words to speak. Example: 0100=electrical.switches.anchorLight.state|true|Anchor light on","type":"array","items":{"type":"string"}},
-"devices":{"title":"BLE scan results","description":"The ESP32-S3 scans Bluetooth Low Energy advertisements only. Bluetooth Classic remotes do not appear here.","type":"string","readOnly":true}
-}})###";
+"selected":{"type":"string"},"connected":{"type":"string","readOnly":true},
+"scanning":{"type":"boolean","readOnly":true},"profiles":{"type":"array"},
+"nearby":{"type":"array","readOnly":true}}})###";
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -522,15 +602,17 @@ std::shared_ptr<BluetoothConfig> bluetooth_config;
 std::shared_ptr<AlarmLed> alarm_led;
 std::shared_ptr<StatusPageItem<String>> s3_link_status;
 std::shared_ptr<StatusPageItem<String>> bluetooth_action_status;
+std::shared_ptr<StatusPageItem<String>> bluetooth_devices_status;
 bool s3_link_up = false;
 uint32_t s3_last_frame_ms = 0;
 uint32_t s3_last_frame_count = 0;
 
-enum class BluetoothAction { kNone, kRefresh, kScan, kPair, kDisconnect,
+enum class BluetoothAction { kNone, kRefresh, kScan, kScanPair, kPair, kDisconnect,
                              kTest, kForget };
 BluetoothAction bluetooth_action = BluetoothAction::kNone;
 uint32_t bluetooth_action_started_ms = 0;
 uint16_t bluetooth_action_sequence = 0;
+bool bluetooth_auto_pairing = false;
 class ArduinoSerialTransport final : public guardian::ByteTransport {
  public:
   enum class Mode { kAuto, kGpio, kUsb };
@@ -581,7 +663,10 @@ void run_bluetooth_action(BluetoothAction action) {
       sent = speech->bluetooth_get_status();
       break;
     case BluetoothAction::kScan:
-      progress = "Scanning for Bluetooth devices…";
+    case BluetoothAction::kScanPair:
+      progress = action == BluetoothAction::kScanPair
+                     ? "Scanning for the remote… keep it close and in pairing mode"
+                     : "Scanning for Bluetooth devices…";
       sent = speech->bluetooth_scan(bluetooth_config->scan_seconds());
       break;
     case BluetoothAction::kPair:
@@ -1543,7 +1628,7 @@ void setup() {
   // router extracts CRC-valid frames from the USB stream and ignores logs.
   Serial.begin(115200);
   // Arduino orders these arguments as RX, TX. Match J201 GPIO17 (RX from the
-  // S3) and GPIO16 (TX to the S3) documented in hardware/wiring.md.
+  // S3) and GPIO16 (TX to the S3) documented in docs/hardware/schematic.md.
   Serial2.begin(115200, SERIAL_8N1, 17, 16);
   ArduinoSerialTransport::Mode transport_mode =
       ArduinoSerialTransport::Mode::kAuto;
@@ -1568,9 +1653,11 @@ void setup() {
       "HALMET ↔ ESP32-S3", "Checking…", "Outlook Guardian", 100);
   bluetooth_action_status = std::make_shared<StatusPageItem<String>>(
       "Bluetooth action", "Idle", "Outlook Guardian", 110);
+  bluetooth_devices_status = std::make_shared<StatusPageItem<String>>(
+      "Bluetooth scan results", "No scan results yet", "Outlook Guardian", 120);
   UIButton::add("guardian-bt-refresh", "Bluetooth: Refresh status", false)
       ->attach([]() { run_bluetooth_action(BluetoothAction::kRefresh); });
-  UIButton::add("guardian-bt-scan", "Bluetooth: Scan for devices", false)
+  UIButton::add("guardian-bt-scan", "Bluetooth: Scan for nearby devices", false)
       ->attach([]() { run_bluetooth_action(BluetoothAction::kScan); });
   UIButton::add("guardian-bt-pair", "Bluetooth: Pair selected device", false)
       ->attach([]() { run_bluetooth_action(BluetoothAction::kPair); });
@@ -1600,6 +1687,8 @@ void setup() {
     s3_link_status->set(link);
 
     const auto& state = speech->bluetooth_state();
+    if (bluetooth_action != BluetoothAction::kPair)
+      bluetooth_config->set_connected(state.connected);
     if (bluetooth_action != BluetoothAction::kNone) {
       const uint32_t elapsed = now - bluetooth_action_started_ms;
       bool finished = false;
@@ -1608,14 +1697,62 @@ void setup() {
         finished = true;
         if (speech->last_terminal_was_error()) {
           result = "Action failed · S3 returned an error";
-        } else if (bluetooth_action == BluetoothAction::kScan) {
-          result = "Scan complete · " +
-                   String(static_cast<int>(speech->bluetooth_devices().size())) +
+        } else if (bluetooth_action == BluetoothAction::kScan ||
+                   bluetooth_action == BluetoothAction::kScanPair) {
+          const auto& found = speech->bluetooth_devices();
+          result = "Scan complete · " + String(static_cast<int>(found.size())) +
                    " device(s) found";
+          if (bluetooth_action == BluetoothAction::kScanPair) {
+            int candidate = -1;
+            int named_matches = 0;
+            for (size_t index = 0; index < found.size(); ++index) {
+              String name(found[index].name.c_str());
+              name.toLowerCase();
+              if (name == "qxs-001" || name == "smartremote") {
+                candidate = static_cast<int>(index);
+                ++named_matches;
+              }
+            }
+            // A nameless HID may expose its name only after connecting. Pair
+            // automatically only when exactly one device was discovered.
+            if (named_matches != 1 && found.size() == 1) candidate = 0;
+            if ((named_matches == 1 || found.size() == 1) && candidate >= 0) {
+              const auto& device = found[candidate];
+              const String name = device.name.empty() ? "Unnamed device"
+                                                       : device.name.c_str();
+              bluetooth_config->select_device(device.address.c_str(),
+                                              device.address_type, name);
+              bluetooth_config->save();
+              if (speech->bluetooth_connect(device.address,
+                                             device.address_type)) {
+                bluetooth_action = BluetoothAction::kPair;
+                bluetooth_auto_pairing = true;
+                bluetooth_action_started_ms = now;
+                bluetooth_action_sequence = speech->last_sent_sequence();
+                set_bluetooth_action_status(
+                    "Remote found · pairing automatically…");
+                return;
+              }
+              result = "Remote found, but pairing command could not be sent";
+            } else if (named_matches > 1) {
+              result = "Several QXS-001 remotes found · select one in Configuration";
+            } else {
+              result = "Scan complete · no named QXS-001 · select the newly "
+                       "appearing device in Configuration";
+            }
+          }
         } else if (bluetooth_action == BluetoothAction::kPair) {
-          result = "Pairing complete";
+          result = bluetooth_auto_pairing ? "Remote found and paired"
+                                          : "Pairing complete";
+          bluetooth_config->set_connected(false);
+          bluetooth_config->set_connected(true);
+          bluetooth_config->save();
+          bluetooth_auto_pairing = false;
         } else if (bluetooth_action == BluetoothAction::kDisconnect) {
           result = "Disconnect complete";
+          bluetooth_config->set_connected(false);
+        } else if (bluetooth_action == BluetoothAction::kForget) {
+          bluetooth_config->set_connected(false);
         } else {
           result = "Action completed";
         }
@@ -1628,32 +1765,42 @@ void setup() {
         }
         bluetooth_action = BluetoothAction::kNone;
         set_bluetooth_action_status(result);
-      } else if (elapsed > 15000) {
+      } else if (elapsed >
+                 (bluetooth_action == BluetoothAction::kScan ||
+                          bluetooth_action == BluetoothAction::kScanPair
+                      ? static_cast<uint32_t>(bluetooth_config->scan_seconds() + 5) *
+                            1000
+                      : 15000)) {
         bluetooth_action = BluetoothAction::kNone;
         set_bluetooth_action_status("Action timed out · check the S3 link");
       }
     }
     String devices;
-    std::vector<String> options;
+    std::vector<BluetoothConfig::Profile> nearby;
     for (const auto& device : speech->bluetooth_devices()) {
       if (devices.length() > 0) devices += "\n";
       const String name = device.name.empty() ? "Unnamed device"
                                                : device.name.c_str();
-      const String option = String(device.address.c_str()) + "|" +
-                            String(static_cast<int>(device.address_type)) +
-                            "|" + String(static_cast<int>(device.rssi)) +
-                            " dBm|" + name;
-      options.push_back(option);
+      BluetoothConfig::Profile item;
+      item.address = device.address.c_str();
+      item.address_type = device.address_type;
+      item.name = name;
+      // Reuse this runtime-only field to avoid another almost-identical
+      // struct; to_json exposes it as the numeric RSSI value.
+      item.last_hid = String(static_cast<int>(device.rssi));
+      nearby.push_back(item);
       devices += name + " — " + String(static_cast<int>(device.rssi)) +
                  " dBm — " + device.address.c_str();
     }
     if (devices.length() == 0) {
       devices = state.scanning
                     ? "Scanning… keep the remote awake and in pairing mode"
-                    : "No BLE devices found. Bluetooth Classic devices such "
-                      "as the QXS-001 may not advertise in BLE mode.";
+                    : "No BLE devices found. Keep the remote close, awake and "
+                      "in pairing mode, then scan again.";
     }
-    bluetooth_config->set_devices(devices, options);
+    bluetooth_config->set_nearby(nearby, state.scanning);
+    if (bluetooth_devices_status != nullptr)
+      bluetooth_devices_status->set(devices);
   });
   speech->bluetooth_get_status();
   if (config->welcome_enabled()) {

@@ -8,6 +8,7 @@
 #include <picotts.h>
 #include <picotts_lang.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -16,10 +17,10 @@
 #include "guardian/speech_server.h"
 
 #ifndef GUARDIAN_S3_RX_PIN
-#define GUARDIAN_S3_RX_PIN 44
+#define GUARDIAN_S3_RX_PIN 2
 #endif
 #ifndef GUARDIAN_S3_TX_PIN
-#define GUARDIAN_S3_TX_PIN 43
+#define GUARDIAN_S3_TX_PIN 1
 #endif
 #ifndef GUARDIAN_S3_BUSY_PIN
 #define GUARDIAN_S3_BUSY_PIN 7
@@ -137,14 +138,44 @@ PicoI2sEngine* PicoI2sEngine::instance_ = nullptr;
 PicoI2sEngine engine;
 std::unique_ptr<guardian::SpeechServer> server;
 guardian::protocol::Parser* parser = nullptr;
+// Keep the board-to-board protocol off UART0. On recent Arduino-ESP32 cores,
+// UART0 is also owned by the ESP32-S3 USB Serial/JTAG console and traffic can
+// disappear when that USB port is connected. UART1 can still be routed to the
+// GPIO2/GPIO1 board-to-board harness.
+HardwareSerial guardian_serial(1);
 void send_frame(const guardian::protocol::Frame& frame, void*);
 
 class BluetoothManager final {
  public:
+  struct ObservedDevice {
+    String address;
+    uint8_t address_type = 0;
+    String name;
+    int rssi = -127;
+    bool connectable = false;
+    bool advertises_hid = false;
+  };
+
+  class ScanCallbacks final : public BLEAdvertisedDeviceCallbacks {
+   public:
+    explicit ScanCallbacks(BluetoothManager* owner) : owner_(owner) {}
+    void onResult(BLEAdvertisedDevice device) override {
+      owner_->observe(device);
+    }
+
+   private:
+    BluetoothManager* owner_;
+  };
+
   bool begin() {
     BLEDevice::init("Guardian-S3");
     scan_ = BLEDevice::getScan();
     scan_->setActiveScan(true);
+    // Arduino-ESP32's default BLEScan result collector keeps only the first
+    // packet received from each address. For active scans that packet is often
+    // the nameless advertisement; the following scan response containing
+    // "QXS-001" is then discarded. Receive duplicates and merge them here.
+    scan_->setAdvertisedDeviceCallbacks(&scan_callbacks_, true, true);
     scan_->setInterval(100);
     scan_->setWindow(80);
     enabled_ = true;
@@ -186,8 +217,12 @@ class BluetoothManager final {
         send({Type::kStarted, frame.sequence, {}});
         scan_sequence_ = frame.sequence;
         scan_complete_ = false;
+        scan_seconds_ = frame.payload[0];
+        observed_devices_.clear();
         scan_->clearResults();
-        scanning_ = scan_->start(frame.payload[0], scan_complete, false);
+        scanning_ = xTaskCreatePinnedToCore(scan_task, "guardian-bt-scan",
+                                            6144, this, 1, &scan_task_handle_,
+                                            0) == pdPASS;
         if (!scanning_) {
           scan_sequence_ = 0;
           error(frame.sequence, 5);
@@ -244,20 +279,45 @@ class BluetoothManager final {
       last_hid_event_ = event;
       send({guardian::protocol::Type::kBtHidEvent, 0, event});
     }
+    if (connect_complete_) {
+      connect_complete_ = false;
+      const uint16_t sequence = connect_sequence_;
+      connect_sequence_ = 0;
+      connect_succeeded_ ? done(sequence) : error(sequence, 5);
+    }
     if (!scan_complete_) return;
     scan_complete_ = false;
     scanning_ = false;
-    BLEScanResults* results = scan_->getResults();
-    if (results != nullptr) {
-      for (int index = 0; index < results->getCount(); ++index) {
-        BLEAdvertisedDevice device = results->getDevice(index);
-        const String address = device.getAddress().toString();
-        const String name = device.haveName() ? device.getName() : String();
+    {
+      for (const auto& device : observed_devices_) {
+        // The UI is for pairing controllers, not observing beacon traffic.
+        // Excluding non-connectable advertisements prevents users from being
+        // offered devices which can only time out when Connect is pressed.
+        if (!device.connectable) continue;
+        const String& address = device.address;
+        String name = device.name;
+        // Advertisement data is untrusted binary input. Some nearby devices
+        // publish control bytes or invalid UTF-8 in the local-name field;
+        // forwarding those bytes would make the HALMET status JSON invalid.
+        String safe_name;
+        safe_name.reserve(name.length());
+        for (size_t byte_index = 0; byte_index < name.length(); ++byte_index) {
+          const uint8_t value = static_cast<uint8_t>(name[byte_index]);
+          if (value >= 0x20 && value <= 0x7e) safe_name += static_cast<char>(value);
+        }
+        name = safe_name;
+        // Many low-power remotes omit their local name while in pairing mode,
+        // but still advertise the standard Human Interface Device service.
+        // Surface that fact so the HALMET UI can distinguish a remote from
+        // unrelated nameless beacons without attempting blind connections.
+        if (name.length() == 0 && device.advertises_hid) {
+          name = "BLE HID device";
+        }
         std::vector<uint8_t> payload;
         payload.insert(payload.end(), address.c_str(),
                        address.c_str() + address.length());
-        payload.push_back(static_cast<uint8_t>(device.getAddressType()));
-        payload.push_back(static_cast<uint8_t>(device.getRSSI()));
+        payload.push_back(device.address_type);
+        payload.push_back(static_cast<uint8_t>(device.rssi));
         const size_t name_length = min(static_cast<size_t>(name.length()),
                                        static_cast<size_t>(48));
         payload.insert(payload.end(), name.c_str(), name.c_str() + name_length);
@@ -270,6 +330,28 @@ class BluetoothManager final {
   }
 
  private:
+  void observe(BLEAdvertisedDevice& incoming) {
+    const String address = incoming.getAddress().toString();
+    auto found = std::find_if(observed_devices_.begin(), observed_devices_.end(),
+                              [&](const ObservedDevice& item) {
+                                return item.address == address;
+                              });
+    if (found == observed_devices_.end()) {
+      observed_devices_.push_back({});
+      found = observed_devices_.end() - 1;
+      found->address = address;
+      found->address_type = static_cast<uint8_t>(incoming.getAddressType());
+    }
+    found->rssi = incoming.getRSSI();
+    found->connectable = found->connectable || incoming.isConnectable();
+    found->advertises_hid =
+        found->advertises_hid ||
+        incoming.isAdvertisingService(BLEUUID((uint16_t)0x1812));
+    if (incoming.haveName() && incoming.getName().length() > 0) {
+      found->name = incoming.getName();
+    }
+  }
+
   static bool valid_address(const uint8_t* value) {
     for (size_t index = 0; index < 17; ++index) {
       if (index % 3 == 2) {
@@ -281,8 +363,12 @@ class BluetoothManager final {
     return true;
   }
 
-  static void scan_complete(BLEScanResults) {
-    if (instance_ != nullptr) instance_->scan_complete_ = true;
+  static void scan_task(void* argument) {
+    auto* self = static_cast<BluetoothManager*>(argument);
+    self->scan_->start(self->scan_seconds_, false);
+    self->scan_task_handle_ = nullptr;
+    self->scan_complete_ = true;
+    vTaskDelete(nullptr);
   }
 
   void set_enabled(bool enabled) {
@@ -304,34 +390,59 @@ class BluetoothManager final {
       error(frame.sequence, 1);
       return;
     }
-    char address_text[18];
-    memcpy(address_text, frame.payload.data(), 17);
-    address_text[17] = '\0';
-    if (client_ == nullptr) client_ = BLEDevice::createClient();
-    if (client_->isConnected()) client_->disconnect();
-    const bool connected = client_->connect(
-        BLEAddress(String(address_text)),
-        frame.payload[17], 5000);
-    if (connected) {
-      BLESecurity::startSecurity(client_->getConnId());
-      BLESecurity::waitForAuthenticationComplete(5000);
-      subscribe_hid_reports();
-      done(frame.sequence);
-    } else {
+    memcpy(connect_address_, frame.payload.data(), 17);
+    connect_address_[17] = '\0';
+    connect_address_type_ = frame.payload[17];
+    connect_sequence_ = frame.sequence;
+    connect_complete_ = false;
+    if (xTaskCreatePinnedToCore(connect_task, "guardian-bt-connect", 8192,
+                                this, 1, &connect_task_handle_, 0) != pdPASS) {
+      connect_sequence_ = 0;
       error(frame.sequence, 5);
     }
   }
 
-  void subscribe_hid_reports() {
-    BLERemoteService* service = client_->getService(BLEUUID((uint16_t)0x1812));
-    if (service == nullptr) return;
-    auto* characteristics = service->getCharacteristics();
-    if (characteristics == nullptr) return;
-    for (auto& entry : *characteristics) {
-      BLERemoteCharacteristic* characteristic = entry.second;
-      if (characteristic != nullptr && characteristic->canNotify() &&
-          characteristic->getUUID().equals(BLEUUID((uint16_t)0x2a4d))) {
-        characteristic->registerForNotify(hid_notify);
+  static void connect_task(void* argument) {
+    auto* self = static_cast<BluetoothManager*>(argument);
+    self->connect_succeeded_ = self->connect_selected();
+    self->connect_task_handle_ = nullptr;
+    self->connect_complete_ = true;
+    vTaskDelete(nullptr);
+  }
+
+  bool connect_selected() {
+    if (client_ == nullptr) client_ = BLEDevice::createClient();
+    if (client_->isConnected()) client_->disconnect();
+    const bool connected = client_->connect(
+        BLEAddress(String(connect_address_)), connect_address_type_, 5000);
+    if (connected) {
+      BLESecurity::startSecurity(client_->getConnId());
+      BLESecurity::waitForAuthenticationComplete(5000);
+      subscribe_input_reports();
+    }
+    return connected;
+  }
+
+  void subscribe_input_reports() {
+    // Standard HID remotes notify through 0x1812/0x2A4D, while several small
+    // media/steering remotes use vendor services. Treat any notifying or
+    // indicating characteristic as an input source; the characteristic handle
+    // is included in the event so mappings remain unambiguous.
+    auto* services = client_->getServices();
+    if (services == nullptr) return;
+    for (auto& service_entry : *services) {
+      BLERemoteService* service = service_entry.second;
+      if (service == nullptr) continue;
+      auto* characteristics = service->getCharacteristics();
+      if (characteristics == nullptr) continue;
+      for (auto& entry : *characteristics) {
+        BLERemoteCharacteristic* characteristic = entry.second;
+        if (characteristic == nullptr) continue;
+        if (characteristic->canNotify()) {
+          characteristic->registerForNotify(hid_notify, true);
+        } else if (characteristic->canIndicate()) {
+          characteristic->registerForNotify(hid_notify, false);
+        }
       }
     }
   }
@@ -376,11 +487,21 @@ class BluetoothManager final {
 
   static BluetoothManager* instance_;
   BLEScan* scan_ = nullptr;
+  ScanCallbacks scan_callbacks_{this};
+  std::vector<ObservedDevice> observed_devices_;
   BLEClient* client_ = nullptr;
   volatile bool scan_complete_ = false;
   bool enabled_ = false;
   bool scanning_ = false;
   uint16_t scan_sequence_ = 0;
+  uint8_t scan_seconds_ = 5;
+  TaskHandle_t scan_task_handle_ = nullptr;
+  char connect_address_[18]{};
+  uint8_t connect_address_type_ = 0;
+  uint16_t connect_sequence_ = 0;
+  TaskHandle_t connect_task_handle_ = nullptr;
+  volatile bool connect_complete_ = false;
+  bool connect_succeeded_ = false;
   portMUX_TYPE hid_mux_ = portMUX_INITIALIZER_UNLOCKED;
   volatile bool hid_pending_ = false;
   std::array<uint8_t, 62> pending_hid_event_{};
@@ -392,7 +513,12 @@ BluetoothManager bluetooth;
 
 void send_frame(const guardian::protocol::Frame& frame, void*) {
   std::vector<uint8_t> wire;
-  if (guardian::protocol::encode(frame, &wire)) Serial0.write(wire.data(), wire.size());
+  if (guardian::protocol::encode(frame, &wire)) {
+    guardian_serial.write(wire.data(), wire.size());
+    // Mirror the framed protocol to USB for guardian_cli.py and the optional
+    // host router. Production traffic remains on UART1 GPIO2/GPIO1.
+    Serial.write(wire.data(), wire.size());
+  }
 }
 void receive_frame(const guardian::protocol::Frame& frame, void*) {
   if (bluetooth.handles(frame.type)) {
@@ -413,10 +539,15 @@ void setup() {
   // associate or start an IP stack; BLE remains available as a central.
   // esp_wifi_stop is idempotent; no Wi-Fi initialization follows this call.
   esp_wifi_stop();
-  Serial0.begin(115200, SERIAL_8N1, GUARDIAN_S3_RX_PIN, GUARDIAN_S3_TX_PIN);
+  Serial.begin(115200);
+  guardian_serial.begin(115200, SERIAL_8N1, GUARDIAN_S3_RX_PIN,
+                        GUARDIAN_S3_TX_PIN);
   pinMode(GUARDIAN_S3_BUSY_PIN, OUTPUT);
   digitalWrite(GUARDIAN_S3_BUSY_PIN, LOW);
-  if (!engine.begin()) return;
+  // Bluetooth and the host protocol must remain available even when the I2S
+  // amplifier is absent or fails to initialize. Speech requests will report
+  // the engine failure through the normal SpeechServer error path.
+  engine.begin();
   rgbLedWrite(GUARDIAN_S3_RGB_PIN, 0, 0, 0);
   bluetooth.begin();
   server = std::make_unique<guardian::SpeechServer>(
@@ -426,8 +557,14 @@ void setup() {
 }
 
 void loop() {
-  while (parser != nullptr && Serial0.available() > 0) {
-    const int value = Serial0.read();
+  while (parser != nullptr && guardian_serial.available() > 0) {
+    const int value = guardian_serial.read();
+    if (value < 0) break;
+    const uint8_t byte = static_cast<uint8_t>(value);
+    parser->feed(&byte, 1);
+  }
+  while (parser != nullptr && Serial.available() > 0) {
+    const int value = Serial.read();
     if (value < 0) break;
     const uint8_t byte = static_cast<uint8_t>(value);
     parser->feed(&byte, 1);

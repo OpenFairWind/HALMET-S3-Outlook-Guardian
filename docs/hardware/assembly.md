@@ -34,9 +34,11 @@ method approved for the exact board. Disconnect USB before restoring external
 ## 5. Add UART and BUSY
 
 With all power removed, connect crossed UART, BUSY and processor-side ground.
-Power the system and observe both UART directions at 115200 8N1. S3 boot text on
-GPIO43 must not cause speech; the framed parser should resynchronize at the `GS`
-magic bytes. Confirm GPIO33 remains an input and that a missing/resetting S3
+Power the system and observe both UART directions at 115200 8N1. The production
+wiring is HALMET GPIO16 (TX) to S3 GPIO2 (RX), HALMET GPIO17 (RX) to S3 GPIO1
+(TX), and processor-side ground to S3 ground. The S3 link uses UART1 so USB
+Serial/JTAG activity cannot steal protocol traffic. Confirm GPIO33 remains an
+input and that a missing/resetting S3
 does not stop HALMET OLED, LED, ACK, snooze or alarm processing.
 
 ## 6. Add I2S and amplifier
